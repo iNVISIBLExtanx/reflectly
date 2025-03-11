@@ -78,11 +78,7 @@ function App() {
               <Goals />
             </ProtectedRoute>
           } />
-          <Route path="/memories" element={
-            <ProtectedRoute>
-              <Memories />
-            </ProtectedRoute>
-          } />
+          {/* Memories functionality now integrated into Journal */}
           <Route path="/profile" element={
             <ProtectedRoute>
               <Profile />

@@ -29,6 +29,9 @@ app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'dev-secret-key'
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=1)
 jwt = JWTManager(app)
 
+# Admin secret key for protected routes
+ADMIN_SECRET = os.environ.get('ADMIN_SECRET', 'admin-secret-key')
+
 # MongoDB connection
 mongo_uri = os.environ.get('MONGODB_URI', 'mongodb://localhost:27017/reflectly')
 mongo_client = MongoClient(mongo_uri)
@@ -87,21 +90,38 @@ def register():
 
 @app.route('/api/auth/login', methods=['POST'])
 def login():
+    print("Login endpoint called")
     data = request.get_json()
+    print(f"Login attempt for email: {data.get('email')}")
     
-    # Find user
-    user = db.users.find_one({'email': data['email']})
-    
-    if not user or not bcrypt.checkpw(data['password'].encode('utf-8'), user['password']):
-        return jsonify({'message': 'Invalid credentials'}), 401
-    
-    # Create access token
-    access_token = create_access_token(identity=data['email'])
-    
-    return jsonify({
-        'message': 'Login successful',
-        'access_token': access_token
-    }), 200
+    try:
+        # Find user
+        user = db.users.find_one({'email': data['email']})
+        print(f"User found: {user is not None}")
+        
+        if not user:
+            print("User not found")
+            return jsonify({'message': 'Invalid credentials'}), 401
+            
+        # Check password
+        password_match = bcrypt.checkpw(data['password'].encode('utf-8'), user['password'])
+        print(f"Password match: {password_match}")
+        
+        if not password_match:
+            print("Password does not match")
+            return jsonify({'message': 'Invalid credentials'}), 401
+        
+        # Create access token
+        access_token = create_access_token(identity=data['email'])
+        print(f"Access token created successfully")
+        
+        return jsonify({
+            'message': 'Login successful',
+            'access_token': access_token
+        }), 200
+    except Exception as e:
+        print(f"Error during login: {str(e)}")
+        return jsonify({'message': f'Login failed: {str(e)}'}), 500
 
 @app.route('/api/auth/user', methods=['GET'])
 @jwt_required()
@@ -130,28 +150,85 @@ def create_journal_entry():
         data = request.get_json()
         print(f"Request data: {data}")
         
+        # Validate input data
+        if not data or 'content' not in data:
+            return jsonify({'message': 'Missing content in request'}), 400
+            
         # Analyze emotion
         print("Analyzing emotion...")
-        emotion_data = emotion_analyzer.analyze(data['content'])
-        print(f"Emotion analysis result: {emotion_data}")
+        try:
+            emotion_data = emotion_analyzer.analyze(data['content'])
+            print(f"Emotion analysis result: {emotion_data}")
+        except Exception as e:
+            print(f"Error in emotion analysis: {str(e)}")
+            # Provide default emotion data if analysis fails
+            emotion_data = {
+                'primary_emotion': 'neutral',
+                'is_positive': False,
+                'emotion_scores': {}
+            }
         
-        # Generate response
-        print("Generating response...")
-        response = response_generator.generate(data['content'], emotion_data)
-        print(f"Generated response: {response}")
-        
-        # Create journal entry
+        # Create journal entry object
         entry = {
             'user_email': user_email,
             'content': data['content'],
             'emotion': emotion_data,
-            'response': response,
-            'created_at': datetime.now()
+            'created_at': datetime.now(),
+            'isUserMessage': data.get('isUserMessage', True)
         }
-        print(f"Created entry object: {entry}")
         
+        # Get relevant memories based on the current entry
+        print("Retrieving relevant memories...")
+        try:
+            memories = memory_manager.get_relevant_memories(user_email, entry)
+            print(f"Retrieved {len(memories)} relevant memories")
+        except Exception as e:
+            print(f"Error retrieving memories: {str(e)}")
+            memories = []
+        
+        # Generate response with memories
+        print("Generating response with memories...")
+        try:
+            response_obj = response_generator.generate_with_memory(data['content'], emotion_data, memories)
+            print(f"Generated response object: {response_obj}")
+        except Exception as e:
+            print(f"Error generating response: {str(e)}")
+            response_obj = {'text': 'I appreciate your entry. How are you feeling about this?', 'memory': None}
+        
+        # Store user entry in database
+        print(f"Created user entry object: {entry}")
         result = db.journal_entries.insert_one(entry)
-        print(f"MongoDB insert result: {result.inserted_id}")
+        user_entry_id = result.inserted_id
+        print(f"MongoDB insert result for user entry: {user_entry_id}")
+        
+        # Create and store AI response as a separate entry
+        ai_entry = {
+            'user_email': user_email,
+            'content': response_obj['text'],
+            'created_at': datetime.now(),
+            'isUserMessage': False,
+            'parent_entry_id': str(user_entry_id)
+        }
+        
+        ai_result = db.journal_entries.insert_one(ai_entry)
+        print(f"MongoDB insert result for AI response: {ai_result.inserted_id}")
+        
+        # If there's a memory reference, store it as well
+        memory_entry_id = None
+        if response_obj['memory']:
+            memory_entry = {
+                'user_email': user_email,
+                'content': response_obj['memory']['message'],
+                'created_at': datetime.now(),
+                'isUserMessage': False,
+                'isMemory': True,
+                'memoryData': response_obj['memory']['data'],
+                'memoryType': response_obj['memory']['type'],
+                'parent_entry_id': str(user_entry_id)
+            }
+            memory_result = db.journal_entries.insert_one(memory_entry)
+            memory_entry_id = memory_result.inserted_id
+            print(f"MongoDB insert result for memory entry: {memory_entry_id}")
         
         # Send to Kafka for processing
         kafka_data = {
@@ -170,8 +247,11 @@ def create_journal_entry():
         
         response_data = {
             'message': 'Journal entry created',
-            'entry_id': str(result.inserted_id),
-            'response': response
+            'entry_id': str(user_entry_id),
+            'response_id': str(ai_result.inserted_id),
+            'response': response_obj['text'],
+            'memory': response_obj['memory'],
+            'memory_id': str(memory_entry_id) if memory_entry_id else None
         }
         print(f"Sending response: {response_data}")
         return jsonify(response_data), 201
@@ -186,8 +266,8 @@ def create_journal_entry():
 def get_journal_entries():
     user_email = get_jwt_identity()
     
-    # Get entries from database
-    entries = list(db.journal_entries.find({'user_email': user_email}).sort('created_at', -1))
+    # Get entries from database - sort by created_at in ascending order (oldest first)
+    entries = list(db.journal_entries.find({'user_email': user_email}).sort('created_at', 1))
     
     # Convert ObjectId to string
     for entry in entries:
@@ -354,6 +434,107 @@ def get_positive_memories():
     memories = memory_manager.get_positive_memories(user_email)
     
     return jsonify(memories), 200
+
+# Admin routes for user management
+@app.route('/api/admin/users', methods=['GET'])
+def admin_list_users():
+    # Check admin secret key
+    auth_header = request.headers.get('X-Admin-Key')
+    if not auth_header or auth_header != ADMIN_SECRET:
+        return jsonify({'message': 'Unauthorized'}), 401
+    
+    # List all users
+    users = list(db.users.find({}, {'password': 0}))
+    for user in users:
+        user['_id'] = str(user['_id'])
+    
+    return jsonify(users), 200
+
+@app.route('/api/admin/users', methods=['POST'])
+def admin_create_user():
+    # Check admin secret key
+    auth_header = request.headers.get('X-Admin-Key')
+    if not auth_header or auth_header != ADMIN_SECRET:
+        return jsonify({'message': 'Unauthorized'}), 401
+    
+    data = request.get_json()
+    
+    # Validate required fields
+    if not all(k in data for k in ['email', 'password', 'name']):
+        return jsonify({'message': 'Missing required fields'}), 400
+    
+    # Check if user already exists
+    existing_user = db.users.find_one({'email': data['email']})
+    if existing_user:
+        return jsonify({'message': f"User with email {data['email']} already exists"}), 400
+    
+    # Hash the password
+    hashed_password = bcrypt.hashpw(data['password'].encode('utf-8'), bcrypt.gensalt())
+    
+    # Create user document
+    user = {
+        'email': data['email'],
+        'password': hashed_password,
+        'name': data['name'],
+        'created_at': datetime.utcnow()
+    }
+    
+    # Insert into database
+    result = db.users.insert_one(user)
+    
+    if result.inserted_id:
+        return jsonify({'message': f"User {data['email']} created successfully"}), 201
+    else:
+        return jsonify({'message': 'Failed to create user'}), 500
+
+@app.route('/api/admin/users/<email>', methods=['DELETE'])
+def admin_delete_user(email):
+    # Check admin secret key
+    auth_header = request.headers.get('X-Admin-Key')
+    if not auth_header or auth_header != ADMIN_SECRET:
+        return jsonify({'message': 'Unauthorized'}), 401
+    
+    # Delete user
+    result = db.users.delete_one({'email': email})
+    
+    if result.deleted_count > 0:
+        return jsonify({'message': f'User {email} deleted successfully'}), 200
+    else:
+        return jsonify({'message': f'User with email {email} not found'}), 404
+
+@app.route('/api/admin/db', methods=['GET'])
+def admin_view_db():
+    # Check admin secret key
+    auth_header = request.headers.get('X-Admin-Key')
+    if not auth_header or auth_header != ADMIN_SECRET:
+        return jsonify({'message': 'Unauthorized'}), 401
+    
+    # Get all collections in the database
+    collections = db.list_collection_names()
+    
+    # Get document counts for each collection
+    collection_counts = {}
+    collection_samples = {}
+    
+    for collection in collections:
+        collection_counts[collection] = db[collection].count_documents({})
+        # Get all documents
+        samples = []
+        for doc in db[collection].find():
+            # Convert ObjectId to string
+            doc['_id'] = str(doc['_id'])
+            # Convert binary data to string representation
+            if 'password' in doc and isinstance(doc['password'], bytes):
+                doc['password'] = 'HASHED_PASSWORD_BINARY'
+            samples.append(doc)
+        collection_samples[collection] = samples
+    
+    return jsonify({
+        'database': 'reflectly',
+        'collections': collections,
+        'counts': collection_counts,
+        'samples': collection_samples
+    }), 200
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5002, debug=True)

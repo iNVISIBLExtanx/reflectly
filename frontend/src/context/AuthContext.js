@@ -19,9 +19,12 @@ export const AuthProvider = ({ children }) => {
   const checkAuth = useCallback(async () => {
     setLoading(true);
     try {
+      console.log('checkAuth: Checking authentication status');
       const token = localStorage.getItem('token');
+      console.log('checkAuth: Token exists:', !!token);
       
       if (!token) {
+        console.log('checkAuth: No token found, user is not authenticated');
         setIsAuthenticated(false);
         setUser(null);
         setLoading(false);
@@ -29,11 +32,14 @@ export const AuthProvider = ({ children }) => {
       }
       
       // Check if token is expired
+      console.log('checkAuth: Decoding token');
       const decodedToken = jwtDecode(token);
       const currentTime = Date.now() / 1000;
+      console.log('checkAuth: Token expiration:', new Date(decodedToken.exp * 1000).toLocaleString());
+      console.log('checkAuth: Current time:', new Date(currentTime * 1000).toLocaleString());
       
       if (decodedToken.exp < currentTime) {
-        // Token is expired
+        console.log('checkAuth: Token is expired');
         localStorage.removeItem('token');
         setIsAuthenticated(false);
         setUser(null);
@@ -42,14 +48,19 @@ export const AuthProvider = ({ children }) => {
       }
       
       // Set auth header
+      console.log('checkAuth: Setting Authorization header');
       axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
       
       // Get user data
+      console.log('checkAuth: Fetching user data from API');
       const response = await axios.get('/api/auth/user');
+      console.log('checkAuth: User data received:', response.data);
       setUser(response.data);
       setIsAuthenticated(true);
+      console.log('checkAuth: User authenticated successfully');
     } catch (err) {
-      console.error('Auth check error:', err);
+      console.error('checkAuth: Authentication error:', err);
+      console.error('checkAuth: Error response:', err.response?.data);
       localStorage.removeItem('token');
       setIsAuthenticated(false);
       setUser(null);
@@ -85,16 +96,24 @@ export const AuthProvider = ({ children }) => {
     setLoading(true);
     setError(null);
     try {
+      console.log('Login attempt with credentials:', credentials);
       const response = await axios.post('/api/auth/login', credentials);
+      console.log('Login API response:', response.data);
       const { access_token } = response.data;
       
+      console.log('Storing token in localStorage');
       localStorage.setItem('token', access_token);
+      console.log('Setting Authorization header');
       axios.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
       
+      console.log('Checking authentication status');
       await checkAuth();
+      console.log('Authentication check completed, navigating to journal');
       navigate('/journal');
       return true;
     } catch (err) {
+      console.error('Login error:', err);
+      console.error('Error response:', err.response?.data);
       setError(err.response?.data?.message || 'Login failed');
       return false;
     } finally {

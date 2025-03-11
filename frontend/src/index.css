@@ -60,6 +60,26 @@ code {
   border-bottom-left-radius: 4px;
 }
 
+/* Memory card styling */
+.memory-card {
+  border-radius: 12px;
+  transition: transform 0.2s, box-shadow 0.2s;
+  overflow: hidden;
+}
+
+.memory-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.1);
+}
+
+.memory-card-encouragement {
+  border-left: 4px solid #4caf50;
+}
+
+.memory-card-reinforcement {
+  border-left: 4px solid #2196f3;
+}
+
 /* Animation classes */
 .fade-in {
   animation: fadeIn 0.5s ease-in;
@@ -72,4 +92,19 @@ code {
   to {
     opacity: 1;
   }
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.slide-in {
+  animation: slideIn 0.4s ease-out;
 }

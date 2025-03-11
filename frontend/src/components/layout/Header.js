@@ -59,8 +59,7 @@ const Header = () => {
   const pages = isAuthenticated 
     ? [
         { title: 'Journal', path: '/journal' },
-        { title: 'Goals', path: '/goals' },
-        { title: 'Memories', path: '/memories' }
+        { title: 'Goals', path: '/goals' }
       ]
     : [];
 

@@ -15,6 +15,7 @@ import {
   Fade,
   useMediaQuery
 } from '@mui/material';
+import MemoryCard from '../components/journal/MemoryCard';
 import { useTheme } from '@mui/material/styles';
 import SendIcon from '@mui/icons-material/Send';
 import MicIcon from '@mui/icons-material/Mic';
@@ -77,6 +78,21 @@ const Journal = () => {
     scrollToBottom();
   }, [entries]);
   
+  // Ensure messages are always displayed in chronological order
+  useEffect(() => {
+    if (entries.length > 0) {
+      // Sort entries by created_at in ascending order (oldest first)
+      const sortedEntries = [...entries].sort((a, b) => {
+        return new Date(a.created_at) - new Date(b.created_at);
+      });
+      
+      // Only update if the order has changed
+      if (JSON.stringify(sortedEntries.map(e => e._id)) !== JSON.stringify(entries.map(e => e._id))) {
+        setEntries(sortedEntries);
+      }
+    }
+  }, [entries]);
+  
   const fetchEntries = async () => {
     try {
       setIsLoading(true);
@@ -121,23 +137,45 @@ const Journal = () => {
       });
       console.log('API response:', response.data);
       
-      // Add AI response
+      // Add AI response with the response_id from the backend
       const aiResponse = {
-        _id: response.data.entry_id,
+        _id: response.data.response_id,
         content: response.data.response,
-        emotion: response.data.emotion,
-        created_at: new Date().toISOString(),
-        isUserMessage: false
+        created_at: new Date(new Date().getTime() + 1000).toISOString(), // 1 second after user message
+        isUserMessage: false,
+        parent_entry_id: response.data.entry_id
       };
       
-      // Replace temporary user message with actual entry and add AI response
-      setEntries(prev => 
-        prev.map(entry => 
+      // Replace the temporary user message with the permanent one and add AI response
+      setEntries(prev => {
+        // First replace the temporary user message with the permanent one
+        const updatedPrev = prev.map(entry => 
           entry._id === tempId 
             ? { ...entry, _id: response.data.entry_id } 
             : entry
-        ).concat(aiResponse)
-      );
+        );
+        
+        // Then add the AI response
+        const withAiResponse = [...updatedPrev, aiResponse];
+        
+        // If there's a memory reference, add it as a separate message
+        if (response.data.memory && response.data.memory_id) {
+          const memoryResponse = {
+            _id: response.data.memory_id,
+            content: response.data.memory.message,
+            created_at: new Date(new Date().getTime() + 2000).toISOString(), // 2 seconds after user message
+            isUserMessage: false,
+            isMemory: true,
+            memoryData: response.data.memory.data,
+            memoryType: response.data.memory.type,
+            parent_entry_id: response.data.entry_id
+          };
+          
+          return [...withAiResponse, memoryResponse];
+        }
+        
+        return withAiResponse;
+      });
       
       setError(null);
     } catch (err) {
@@ -300,21 +338,28 @@ const Journal = () => {
                       </Avatar>
                       
                       <Box>
-                        <Box 
-                          className={`chat-bubble ${entry.isUserMessage ? 'user-bubble' : 'ai-bubble'}`}
-                          sx={{
-                            backgroundColor: entry.isUserMessage 
-                              ? 'primary.light' 
-                              : theme.palette.mode === 'dark' 
-                                ? 'grey.800' 
-                                : 'grey.100',
-                            color: entry.isUserMessage 
-                              ? 'white' 
-                              : 'text.primary',
-                          }}
-                        >
-                          <Typography variant="body1">{entry.content}</Typography>
-                        </Box>
+                        {entry.isMemory ? (
+                          <MemoryCard 
+                            memoryData={entry.memoryData} 
+                            memoryType={entry.memoryType} 
+                          />
+                        ) : (
+                          <Box 
+                            className={`chat-bubble ${entry.isUserMessage ? 'user-bubble' : 'ai-bubble'}`}
+                            sx={{
+                              backgroundColor: entry.isUserMessage 
+                                ? 'primary.light' 
+                                : theme.palette.mode === 'dark' 
+                                  ? 'grey.800' 
+                                  : 'grey.100',
+                              color: entry.isUserMessage 
+                                ? 'white' 
+                                : 'text.primary',
+                            }}
+                          >
+                            <Typography variant="body1">{entry.content}</Typography>
+                          </Box>
+                        )}
                         
                         <Box 
                           sx={{ 

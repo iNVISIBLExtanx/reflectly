@@ -181,30 +181,129 @@ class MemoryManager:
         Returns:
             list: List of relevant memories
         """
-        # In a production system, this would use semantic search or embeddings
-        # For now, we'll use a simple approach based on emotion
+        try:
+            # Validate input
+            if not user_email or not current_entry:
+                print("Invalid input to get_relevant_memories")
+                return []
+                
+            # Ensure current_entry has required fields
+            if 'emotion' not in current_entry:
+                print("No emotion data in current entry")
+                return []
+                
+            # Ensure emotion has required fields
+            if 'is_positive' not in current_entry['emotion']:
+                print("Missing is_positive in emotion data")
+                current_entry['emotion']['is_positive'] = False
+                
+            if 'primary_emotion' not in current_entry['emotion']:
+                print("Missing primary_emotion in emotion data")
+                current_entry['emotion']['primary_emotion'] = 'neutral'
+            
+            # In a production system, this would use semantic search or embeddings
+            # For now, we'll use a sophisticated approach based on emotion and content
+            
+            # If current emotion is negative, get positive memories to provide encouragement
+            if not current_entry['emotion']['is_positive']:
+                print(f"User is feeling {current_entry['emotion']['primary_emotion']} - retrieving positive memories for encouragement")
+                return self.get_positive_memories(user_email, limit)
+            
+            # For positive emotions, try to find memories with similar themes
+            # This would ideally use NLP/embeddings, but for now we'll use a simple keyword approach
+            if 'content' not in current_entry:
+                print("No content in current entry")
+                return []
+                
+            content_words = set(current_entry['content'].lower().split())
+            
+            # Remove common words that don't add much meaning
+            stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'is', 'are', 'was', 'were', 
+                          'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did',
+                          'to', 'from', 'in', 'out', 'on', 'off', 'over', 'under', 'again'}
+            content_words = content_words - stop_words
+        except Exception as e:
+            print(f"Error in get_relevant_memories initial processing: {str(e)}")
+            return []
         
-        # If current emotion is negative, get positive memories
-        if not current_entry['emotion']['is_positive']:
-            return self.get_positive_memories(user_email, limit)
-        
-        # Otherwise, get memories with the same emotion
-        entries = list(self.db.journal_entries.find({
-            'user_email': user_email,
-            'emotion.primary_emotion': current_entry['emotion']['primary_emotion'],
-            '_id': {'$ne': current_entry['_id']}
-        }).sort('created_at', -1).limit(10))
-        
-        memories = []
-        for entry in entries:
-            memory_data = {
-                'entry_id': str(entry['_id']),
-                'date': entry['created_at'].strftime('%Y-%m-%d'),
-                'emotion': entry['emotion']['primary_emotion'],
-                'summary': self._generate_summary(entry['content']),
-                'score': self._calculate_memory_score(entry)
-            }
-            memories.append(memory_data)
+        try:
+            # Get recent entries
+            entries = list(self.db.journal_entries.find({
+                'user_email': user_email,
+                '_id': {'$ne': ObjectId(current_entry.get('_id', ''))}
+            }).sort('created_at', -1).limit(20))
+            
+            # Score entries based on content similarity and emotion
+            scored_entries = []
+            for entry in entries:
+                try:
+                    # Skip entries without content
+                    if 'content' not in entry:
+                        continue
+                        
+                    entry_words = set(entry['content'].lower().split()) - stop_words
+                    
+                    # Calculate word overlap
+                    common_words = content_words.intersection(entry_words)
+                    similarity_score = len(common_words) / max(len(content_words), 1)
+                    
+                    # Boost score for entries with the same emotion
+                    if 'emotion' in entry and 'primary_emotion' in entry.get('emotion', {}) and \
+                       'emotion' in current_entry and 'primary_emotion' in current_entry.get('emotion', {}):
+                        if entry.get('emotion', {}).get('primary_emotion') == current_entry['emotion'].get('primary_emotion'):
+                            similarity_score *= 1.5
+                    
+                    # Boost score for positive memories
+                    if entry.get('emotion', {}).get('is_positive', False):
+                        similarity_score *= 1.2
+                        
+                    scored_entries.append((entry, similarity_score))
+                except Exception as e:
+                    print(f"Error processing entry in get_relevant_memories: {str(e)}")
+                    continue
+            
+            # Sort by score
+            scored_entries.sort(key=lambda x: x[1], reverse=True)
+            
+            # Get top entries
+            top_entries = [entry for entry, score in scored_entries[:10]]
+            
+            memories = []
+            for entry in top_entries:
+                try:
+                    # Ensure created_at is a datetime object
+                    created_at = entry.get('created_at')
+                    date_str = 'Unknown date'
+                    
+                    if isinstance(created_at, datetime):
+                        date_str = created_at.strftime('%Y-%m-%d')
+                    elif isinstance(created_at, str):
+                        try:
+                            date_obj = datetime.fromisoformat(created_at)
+                            date_str = date_obj.strftime('%Y-%m-%d')
+                        except ValueError:
+                            # If parsing fails, just use the first 10 chars (YYYY-MM-DD)
+                            date_str = created_at[:10] if len(created_at) >= 10 else created_at
+                    
+                    # Ensure emotion data exists
+                    emotion = 'neutral'
+                    if 'emotion' in entry and 'primary_emotion' in entry['emotion']:
+                        emotion = entry['emotion']['primary_emotion']
+                        
+                    memory_data = {
+                        'entry_id': str(entry.get('_id', '')),
+                        'date': date_str,
+                        'emotion': emotion,
+                        'summary': self._generate_summary(entry.get('content', '')),
+                        'score': self._calculate_memory_score(entry)
+                    }
+                    memories.append(memory_data)
+                except Exception as e:
+                    print(f"Error creating memory data: {str(e)}")
+                    continue
+        except Exception as e:
+            print(f"Error in get_relevant_memories processing: {str(e)}")
+            return []
         
         # Sort by score and select top memories
         memories.sort(key=lambda x: x['score'], reverse=True)
