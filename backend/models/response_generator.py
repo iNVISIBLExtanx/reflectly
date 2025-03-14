@@ -128,7 +128,7 @@ class ResponseGenerator:
         # If there are memories, determine how to use them based on emotional state
         if memories and len(memories) > 0:
             try:
-                # For negative emotions, provide encouraging memories
+                # Only show memory cards for negative emotions
                 if not emotion_data['is_positive']:
                     memory = random.choice(memories)
                     memory_reference = f"I remember that on {memory.get('date', 'a previous day')}, you wrote about feeling {memory.get('emotion', 'good')} when {memory.get('summary', 'something positive happened')}. Perhaps reflecting on that positive experience might help now."
@@ -140,17 +140,9 @@ class ResponseGenerator:
                         'message': memory_reference
                     }
                 
-                # For positive emotions, sometimes reinforce with similar positive memories
-                elif emotion_data['is_positive'] and random.random() > 0.7:  # 30% chance
-                    memory = random.choice(memories)
-                    memory_reference = f"It's great to see you feeling {emotion_data['primary_emotion']}! This reminds me of {memory.get('date', 'a previous day')} when you also felt {memory.get('emotion', 'good')} about {memory.get('summary', 'something positive')}."
-                    
-                    # Add memory data to response object
-                    response_obj['memory'] = {
-                        'type': 'reinforcement',
-                        'data': memory,
-                        'message': memory_reference
-                    }
+                # For positive emotions, just store them without showing memory cards
+                # This ensures we build up a collection of positive memories to reference later
+                # but we don't show unnecessary memory cards during positive conversations
             except Exception as e:
                 print(f"Error processing memories: {str(e)}")
                 # Continue without memory if there's an error
