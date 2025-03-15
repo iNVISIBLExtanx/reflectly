@@ -112,10 +112,10 @@ class MemoryManager:
                 'score': self._calculate_memory_score(entry)
             }
             
-            # Store in Redis list
+            # Store in Redis list with higher priority for more recent positive memories
             self.redis_client.lpush(positive_key, json.dumps(memory_data, cls=MongoJSONEncoder))
-            # Trim list to keep only the top 50 memories
-            self.redis_client.ltrim(positive_key, 0, 49)
+            # Trim list to keep only the top 100 memories (increased from 50 to store more positive memories)
+            self.redis_client.ltrim(positive_key, 0, 99)
     
     def get_positive_memories(self, user_email, limit=5):
         """
@@ -209,8 +209,12 @@ class MemoryManager:
                 print(f"User is feeling {current_entry['emotion']['primary_emotion']} - retrieving positive memories for encouragement")
                 return self.get_positive_memories(user_email, limit)
             
-            # For positive emotions, try to find memories with similar themes
-            # This would ideally use NLP/embeddings, but for now we'll use a simple keyword approach
+            # For positive emotions, don't return any memories to avoid showing unnecessary memory cards
+            # Instead, just store the positive memory for future reference
+            print(f"User is feeling {current_entry['emotion']['primary_emotion']} - storing as positive memory without showing memory card")
+            return []
+            
+            # The code below is intentionally unreachable - keeping for reference
             if 'content' not in current_entry:
                 print("No content in current entry")
                 return []

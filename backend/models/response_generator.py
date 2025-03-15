@@ -40,6 +40,59 @@ class ResponseGenerator:
             "What patterns do you notice in how you respond to similar situations?",
             "If you could change one thing about this experience, what would it be?"
         ]
+        
+        # Define suggested actions for different emotions
+        self.suggested_actions = {
+            'sadness': [
+                "Reach out to a friend or family member",
+                "Practice self-care activities",
+                "Listen to uplifting music",
+                "Take a short walk outside",
+                "Write down three things you're grateful for"
+            ],
+            'anger': [
+                "Take deep breaths for a few minutes",
+                "Write down your thoughts",
+                "Engage in physical activity",
+                "Practice mindfulness meditation",
+                "Step away from the situation temporarily"
+            ],
+            'fear': [
+                "Focus on your breathing",
+                "Challenge negative thoughts",
+                "Talk to someone you trust",
+                "Create a plan to address your concerns",
+                "Practice progressive muscle relaxation"
+            ],
+            'disgust': [
+                "Redirect your attention to something positive",
+                "Practice acceptance",
+                "Engage in a pleasant activity",
+                "Connect with supportive people",
+                "Focus on things you appreciate"
+            ],
+            'neutral': [
+                "Set a goal for today",
+                "Practice gratitude",
+                "Learn something new",
+                "Connect with nature",
+                "Reflect on your recent achievements"
+            ],
+            'joy': [
+                "Share your positive experience with others",
+                "Practice gratitude",
+                "Savor the moment",
+                "Set new goals",
+                "Pay it forward with a kind act"
+            ],
+            'surprise': [
+                "Reflect on what surprised you",
+                "Consider what you can learn from this experience",
+                "Share your experience with others",
+                "Use this energy for creative activities",
+                "Journal about your unexpected insights"
+            ]
+        }
     
     def generate(self, text, emotion_data):
         """
@@ -89,17 +142,17 @@ class ResponseGenerator:
         
         return response
         
-    def generate_with_memory(self, text, emotion_data, memories):
+    def generate_with_memory(self, text, emotion_data, memories=None):
         """
-        Generate a response that incorporates past memories.
+        Generate a response without incorporating past memories (memory functionality removed).
         
         Args:
             text (str): The user's input text
             emotion_data (dict): Emotion analysis data
-            memories (list): List of relevant memories
+            memories (list): Not used, kept for backward compatibility
             
         Returns:
-            dict: A response object with text and memory data
+            dict: A response object with text and suggested actions
         """
         # Ensure emotion_data has all required fields
         if not emotion_data or not isinstance(emotion_data, dict):
@@ -120,39 +173,34 @@ class ResponseGenerator:
             
         # Get base response
         base_response = self.generate(text, emotion_data)
+        
+        # Get suggested actions based on emotion
+        primary_emotion = emotion_data['primary_emotion']
+        suggested_actions = self._get_suggested_actions(primary_emotion)
+        
         response_obj = {
             'text': base_response,
-            'memory': None
+            'suggested_actions': suggested_actions
         }
         
-        # If there are memories, determine how to use them based on emotional state
-        if memories and len(memories) > 0:
-            try:
-                # For negative emotions, provide encouraging memories
-                if not emotion_data['is_positive']:
-                    memory = random.choice(memories)
-                    memory_reference = f"I remember that on {memory.get('date', 'a previous day')}, you wrote about feeling {memory.get('emotion', 'good')} when {memory.get('summary', 'something positive happened')}. Perhaps reflecting on that positive experience might help now."
-                    
-                    # Add memory data to response object
-                    response_obj['memory'] = {
-                        'type': 'encouragement',
-                        'data': memory,
-                        'message': memory_reference
-                    }
-                
-                # For positive emotions, sometimes reinforce with similar positive memories
-                elif emotion_data['is_positive'] and random.random() > 0.7:  # 30% chance
-                    memory = random.choice(memories)
-                    memory_reference = f"It's great to see you feeling {emotion_data['primary_emotion']}! This reminds me of {memory.get('date', 'a previous day')} when you also felt {memory.get('emotion', 'good')} about {memory.get('summary', 'something positive')}."
-                    
-                    # Add memory data to response object
-                    response_obj['memory'] = {
-                        'type': 'reinforcement',
-                        'data': memory,
-                        'message': memory_reference
-                    }
-            except Exception as e:
-                print(f"Error processing memories: {str(e)}")
-                # Continue without memory if there's an error
-        
         return response_obj
+        
+    def _get_suggested_actions(self, emotion, count=3):
+        """
+        Get suggested actions for the given emotion.
+        
+        Args:
+            emotion (str): The emotion to get suggestions for
+            count (int): Number of suggestions to return
+            
+        Returns:
+            list: List of suggested actions
+        """
+        # Get suggestions for the emotion, or default to neutral
+        all_suggestions = self.suggested_actions.get(emotion, self.suggested_actions['neutral'])
+        
+        # Randomly select a subset of suggestions
+        if len(all_suggestions) <= count:
+            return all_suggestions
+        else:
+            return random.sample(all_suggestions, count)
