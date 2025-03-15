@@ -11,8 +11,17 @@ import json
 from dotenv import load_dotenv
 from models.emotion_analyzer import EmotionAnalyzer
 from models.response_generator import ResponseGenerator
-from models.memory_manager import MemoryManager, MongoJSONEncoder
 from models.goal_tracker import GoalTracker
+from models.emotional_graph import EmotionalGraph
+
+# Custom JSON encoder to handle MongoDB ObjectId and datetime objects
+class MongoJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, ObjectId):
+            return str(obj)
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super(MongoJSONEncoder, self).default(obj)
 
 # Load environment variables
 load_dotenv()
@@ -55,8 +64,8 @@ kafka_producer = MockKafkaProducer()
 # Initialize models
 emotion_analyzer = EmotionAnalyzer()
 response_generator = ResponseGenerator()
-memory_manager = MemoryManager(db, redis_client)
 goal_tracker = GoalTracker(db)
+emotional_graph = EmotionalGraph(db)
 
 # Authentication routes
 @app.route('/api/auth/register', methods=['POST'])
@@ -167,6 +176,16 @@ def create_journal_entry():
                 'is_positive': False,
                 'emotion_scores': {}
             }
+            
+        # Record emotion in emotional graph
+        try:
+            print("Recording emotion in emotional graph...")
+            emotion_state_id = emotional_graph.record_emotion(user_email, emotion_data)
+            print(f"Recorded emotion state: {emotion_state_id}")
+            # Add emotional state ID to emotion data
+            emotion_data['emotion_state_id'] = emotion_state_id
+        except Exception as e:
+            print(f"Error recording emotion in graph: {str(e)}")
         
         # Create journal entry object
         entry = {
@@ -177,23 +196,20 @@ def create_journal_entry():
             'isUserMessage': data.get('isUserMessage', True)
         }
         
-        # Get relevant memories based on the current entry
-        print("Retrieving relevant memories...")
-        try:
-            memories = memory_manager.get_relevant_memories(user_email, entry)
-            print(f"Retrieved {len(memories)} relevant memories")
-        except Exception as e:
-            print(f"Error retrieving memories: {str(e)}")
-            memories = []
+        # Memory functionality removed as requested
+        memories = []
         
         # Generate response with memories
         print("Generating response with memories...")
         try:
-            response_obj = response_generator.generate_with_memory(data['content'], emotion_data, memories)
+            response_obj = response_generator.generate_with_memory(data['content'], emotion_data)
             print(f"Generated response object: {response_obj}")
         except Exception as e:
             print(f"Error generating response: {str(e)}")
-            response_obj = {'text': 'I appreciate your entry. How are you feeling about this?', 'memory': None}
+            response_obj = {
+                'text': 'I appreciate your entry. How are you feeling about this?', 
+                'suggested_actions': ["Take a moment to breathe", "Write down your thoughts", "Connect with a friend"]
+            }
         
         # Store user entry in database
         print(f"Created user entry object: {entry}")
@@ -213,45 +229,28 @@ def create_journal_entry():
         ai_result = db.journal_entries.insert_one(ai_entry)
         print(f"MongoDB insert result for AI response: {ai_result.inserted_id}")
         
-        # If there's a memory reference, store it as well
+        # Memory functionality removed as requested
         memory_entry_id = None
-        if response_obj['memory']:
-            memory_entry = {
-                'user_email': user_email,
-                'content': response_obj['memory']['message'],
-                'created_at': datetime.now(),
-                'isUserMessage': False,
-                'isMemory': True,
-                'memoryData': response_obj['memory']['data'],
-                'memoryType': response_obj['memory']['type'],
-                'parent_entry_id': str(user_entry_id)
-            }
-            memory_result = db.journal_entries.insert_one(memory_entry)
-            memory_entry_id = memory_result.inserted_id
-            print(f"MongoDB insert result for memory entry: {memory_entry_id}")
         
         # Send to Kafka for processing
         kafka_data = {
             'entry_id': str(result.inserted_id),
             'user_email': user_email,
             'content': data['content'],
-            'emotion': emotion_data
+            'emotion': emotion_data,
+            'emotion_state_id': emotion_data.get('emotion_state_id')
         }
         print(f"Sending to Kafka: {kafka_data}")
         kafka_producer.send('journal-entries', kafka_data)
         
-        # Update memory
-        print("Storing entry in memory manager...")
-        memory_manager.store_entry(user_email, entry)
-        print("Entry stored in memory manager")
+        # Memory functionality removed as requested
         
         response_data = {
             'message': 'Journal entry created',
             'entry_id': str(user_entry_id),
             'response_id': str(ai_result.inserted_id),
             'response': response_obj['text'],
-            'memory': response_obj['memory'],
-            'memory_id': str(memory_entry_id) if memory_entry_id else None
+            'suggested_actions': response_obj.get('suggested_actions', [])
         }
         print(f"Sending response: {response_data}")
         return jsonify(response_data), 201
@@ -336,104 +335,7 @@ def update_goal_progress(goal_id):
     return jsonify({'message': 'Goal progress updated'}), 200
 
 # Memory routes
-@app.route('/api/memories', methods=['GET'])
-@jwt_required()
-def get_memories():
-    user_email = get_jwt_identity()
-    
-    # Get query parameters
-    emotion = request.args.get('emotion')
-    tag = request.args.get('tag')
-    favorite = request.args.get('favorite', '').lower() == 'true'
-    
-    # Get memories with optional filters
-    memories = memory_manager.get_memories(user_email, emotion=emotion, tag=tag, favorite=favorite)
-    
-    return jsonify(memories), 200
-
-@app.route('/api/memories/<memory_id>', methods=['GET'])
-@jwt_required()
-def get_memory(memory_id):
-    user_email = get_jwt_identity()
-    
-    # Get specific memory
-    memory = memory_manager.get_memory_by_id(user_email, memory_id)
-    
-    if not memory:
-        return jsonify({'message': 'Memory not found'}), 404
-    
-    return jsonify(memory), 200
-
-@app.route('/api/memories', methods=['POST'])
-@jwt_required()
-def create_memory():
-    user_email = get_jwt_identity()
-    data = request.get_json()
-    
-    # Create memory
-    memory = {
-        'user_email': user_email,
-        'title': data['title'],
-        'content': data['content'],
-        'emotion': data.get('emotion'),
-        'tags': data.get('tags', []),
-        'favorite': data.get('favorite', False),
-        'created_at': datetime.now()
-    }
-    
-    result = db.memories.insert_one(memory)
-    
-    return jsonify({
-        'message': 'Memory created',
-        'memory_id': str(result.inserted_id)
-    }), 201
-
-@app.route('/api/memories/<memory_id>', methods=['PUT'])
-@jwt_required()
-def update_memory(memory_id):
-    user_email = get_jwt_identity()
-    data = request.get_json()
-    
-    # Update memory
-    result = db.memories.update_one(
-        {'_id': ObjectId(memory_id), 'user_email': user_email},
-        {'$set': {
-            'title': data.get('title'),
-            'content': data.get('content'),
-            'emotion': data.get('emotion'),
-            'tags': data.get('tags'),
-            'favorite': data.get('favorite'),
-            'updated_at': datetime.now()
-        }}
-    )
-    
-    if result.matched_count == 0:
-        return jsonify({'message': 'Memory not found'}), 404
-    
-    return jsonify({'message': 'Memory updated'}), 200
-
-@app.route('/api/memories/<memory_id>', methods=['DELETE'])
-@jwt_required()
-def delete_memory(memory_id):
-    user_email = get_jwt_identity()
-    
-    # Delete memory
-    result = db.memories.delete_one({'_id': ObjectId(memory_id), 'user_email': user_email})
-    
-    if result.deleted_count == 0:
-        return jsonify({'message': 'Memory not found'}), 404
-    
-    return jsonify({'message': 'Memory deleted'}), 200
-
-@app.route('/api/memories/positive', methods=['GET'])
-@jwt_required()
-def get_positive_memories():
-    user_email = get_jwt_identity()
-    
-    # Get positive memories
-    memories = memory_manager.get_positive_memories(user_email)
-    
-    return jsonify(memories), 200
+# Memory routes have been removed as requested
 
 # Admin routes for user management
 @app.route('/api/admin/users', methods=['GET'])
