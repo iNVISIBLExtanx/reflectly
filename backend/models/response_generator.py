@@ -142,14 +142,16 @@ class ResponseGenerator:
         
         return response
         
-    def generate_with_memory(self, text, emotion_data, memories=None):
+    def generate_with_memory(self, text, emotion_data, memories=None, suggested_actions=None, emotion_history=None):
         """
-        Generate a response without incorporating past memories (memory functionality removed).
+        Generate a personalized response incorporating emotional history and suggested actions.
         
         Args:
             text (str): The user's input text
             emotion_data (dict): Emotion analysis data
-            memories (list): Not used, kept for backward compatibility
+            memories (list): Optional memory data for context
+            suggested_actions (list): Optional suggested actions from emotional graph
+            emotion_history (list): Optional emotional state history
             
         Returns:
             dict: A response object with text and suggested actions
@@ -170,20 +172,68 @@ class ResponseGenerator:
             emotion_data['is_positive'] = False
         if 'emotion_scores' not in emotion_data:
             emotion_data['emotion_scores'] = {}
-            
-        # Get base response
-        base_response = self.generate(text, emotion_data)
         
-        # Get suggested actions based on emotion
         primary_emotion = emotion_data['primary_emotion']
-        suggested_actions = self._get_suggested_actions(primary_emotion)
+        is_positive = emotion_data['is_positive']
+        
+        # Generate a personalized response based on emotional context
+        personalized_response = self._generate_personalized_response(text, emotion_data, emotion_history)
+        
+        # Use provided suggested actions if available, otherwise generate generic ones
+        if not suggested_actions:
+            suggested_actions = self._get_suggested_actions(primary_emotion)
+        
+        # Create a more personalized response by adding context about emotional journey
+        if emotion_history and not is_positive:
+            # Add encouragement based on past positive emotions if current emotion is negative
+            positive_history = [state for state in emotion_history if state.get('is_positive', False)]
+            if positive_history:
+                # Add a reminder of past positive experiences
+                personalized_response += f" Remember that you've felt positive emotions before, and you can get there again."
         
         response_obj = {
-            'text': base_response,
+            'text': personalized_response,
             'suggested_actions': suggested_actions
         }
         
         return response_obj
+        
+    def _generate_personalized_response(self, text, emotion_data, emotion_history=None):
+        """
+        Generate a personalized response based on the user's emotional context and history.
+        
+        Args:
+            text (str): The user's input text
+            emotion_data (dict): Emotion analysis data
+            emotion_history (list): Optional emotional state history
+            
+        Returns:
+            str: A personalized response
+        """
+        primary_emotion = emotion_data['primary_emotion']
+        is_positive = emotion_data['is_positive']
+        
+        # Start with a base response
+        base_response = self.generate(text, emotion_data)
+        
+        # If we have emotional history, enhance the response with personalized insights
+        if emotion_history and len(emotion_history) > 1:
+            # Check for patterns in emotional states
+            recent_emotions = [state.get('primary_emotion') for state in emotion_history[:5]]
+            
+            # If there's a pattern of negative emotions
+            if all(emotion in ['sadness', 'anger', 'fear', 'disgust'] for emotion in recent_emotions[:3]):
+                base_response += " I've noticed you've been experiencing challenging emotions lately. Let's work together to find ways to improve how you're feeling."
+            
+            # If there's improvement in emotional state
+            if not is_positive and any(state.get('is_positive', False) for state in emotion_history[1:3]):
+                base_response += " It seems your emotions have shifted recently. What do you think contributed to this change?"
+            
+            # If there's a consistent positive trend
+            if is_positive and all(state.get('is_positive', False) for state in emotion_history[:3]):
+                base_response += " You've been maintaining positive emotions consistently. That's wonderful progress!"
+        
+        return base_response
         
     def _get_suggested_actions(self, emotion, count=3):
         """

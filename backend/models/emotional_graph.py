@@ -135,7 +135,7 @@ class EmotionalGraph:
     def get_suggested_actions(self, user_email, current_emotion):
         """
         Get suggested actions for transitioning from the current emotional state.
-        This is a simplified implementation that returns generic suggestions.
+        This implementation returns personalized suggestions based on the user's emotional history.
         
         Args:
             user_email (str): The user's email
@@ -144,8 +144,8 @@ class EmotionalGraph:
         Returns:
             list: List of suggested actions
         """
-        # Define generic suggestions for each emotion type
-        suggestions = {
+        # Define generic suggestions for each emotion type as fallback
+        generic_suggestions = {
             'sadness': [
                 "Reach out to a friend or family member",
                 "Practice self-care activities",
@@ -190,5 +190,131 @@ class EmotionalGraph:
             ]
         }
         
-        # Return suggestions for the current emotion, or default suggestions
-        return suggestions.get(current_emotion, suggestions['neutral'])
+        # If current emotion is already positive, return generic suggestions
+        if current_emotion in self.positive_emotions:
+            return generic_suggestions.get(current_emotion, generic_suggestions['neutral'])
+        
+        # Find personalized suggestions based on user's emotional history
+        personalized_suggestions = self._find_personalized_path_suggestions(user_email, current_emotion)
+        
+        # If we have personalized suggestions, use them; otherwise fall back to generic
+        if personalized_suggestions and len(personalized_suggestions) >= 2:
+            return personalized_suggestions
+        else:
+            return generic_suggestions.get(current_emotion, generic_suggestions['neutral'])
+    
+    def _find_personalized_path_suggestions(self, user_email, current_emotion):
+        """
+        Find personalized suggestions based on the user's emotional transition history.
+        Identifies paths that have previously led from the current emotion to positive emotions.
+        
+        Args:
+            user_email (str): The user's email
+            current_emotion (str): Current emotional state
+            
+        Returns:
+            list: List of personalized suggested actions
+        """
+        # Get transitions from the current emotion to any positive emotion
+        transitions = list(self.transitions_collection.find({
+            'user_email': user_email,
+            'from_emotion': current_emotion,
+            'to_emotion': {'$in': self.positive_emotions}
+        }).sort('timestamp', -1).limit(10))
+        
+        if not transitions:
+            return []
+        
+        # Get the emotional states involved in these transitions
+        state_ids = []
+        for transition in transitions:
+            state_ids.append(ObjectId(transition['from_state_id']))
+            state_ids.append(ObjectId(transition['to_state_id']))
+        
+        # Get the journal entries associated with these emotional states
+        states = list(self.emotions_collection.find({
+            '_id': {'$in': state_ids}
+        }))
+        
+        # Create a mapping of state IDs to entry IDs
+        state_to_entry = {}
+        for state in states:
+            if state.get('entry_id'):
+                state_to_entry[str(state['_id'])] = state['entry_id']
+        
+        # Extract personalized suggestions based on content analysis
+        personalized_suggestions = [
+            f"Try activities that helped you before: {self._extract_activity_from_transition(transition)}"
+            for transition in transitions
+            if self._extract_activity_from_transition(transition)
+        ]
+        
+        # Add some generic transition suggestions if we don't have enough
+        if len(personalized_suggestions) < 3:
+            if current_emotion == 'sadness':
+                personalized_suggestions.append("Recall a happy memory and focus on the positive feelings")
+            elif current_emotion == 'anger':
+                personalized_suggestions.append("Practice deep breathing and count to 10 before responding")
+            elif current_emotion == 'fear':
+                personalized_suggestions.append("Write down your fears and challenge each one with evidence")
+            elif current_emotion == 'disgust':
+                personalized_suggestions.append("Focus on something beautiful or inspiring in your environment")
+        
+        # Limit to 4 suggestions
+        return personalized_suggestions[:4]
+    
+    def get_emotion_history(self, user_email, limit=5):
+        """
+        Get a user's emotional history, ordered by most recent first.
+        
+        Args:
+            user_email (str): The user's email
+            limit (int): Maximum number of emotional states to return
+            
+        Returns:
+            list: List of emotional state documents
+        """
+        try:
+            # Get the most recent emotional states for the user
+            emotion_history = list(self.emotions_collection.find(
+                {'user_email': user_email}
+            ).sort('timestamp', -1).limit(limit))
+            
+            # Convert ObjectId to string for serialization
+            for state in emotion_history:
+                if '_id' in state:
+                    state['_id'] = str(state['_id'])
+                    
+            return emotion_history
+        except Exception as e:
+            print(f"Error retrieving emotion history: {str(e)}")
+            return []
+    
+    def _extract_activity_from_transition(self, transition):
+        """
+        Extract a potential activity that led to a positive emotional transition.
+        This is a simplified implementation that could be enhanced with NLP in production.
+        
+        Args:
+            transition: The emotional transition document
+            
+        Returns:
+            str: A suggested activity or None
+        """
+        # This would ideally use NLP to extract activities from journal entries
+        # For now, we'll return a simplified suggestion based on the emotions involved
+        from_emotion = transition.get('from_emotion', '')
+        to_emotion = transition.get('to_emotion', '')
+        
+        if from_emotion == 'sadness' and to_emotion == 'joy':
+            return "connecting with friends or engaging in a favorite hobby"
+        elif from_emotion == 'anger' and to_emotion in self.positive_emotions:
+            return "physical exercise or creative expression"
+        elif from_emotion == 'fear' and to_emotion in self.positive_emotions:
+            return "meditation or talking through your concerns"
+        elif from_emotion == 'disgust' and to_emotion in self.positive_emotions:
+            return "focusing on gratitude or spending time in nature"
+        elif from_emotion == 'neutral' and to_emotion in self.positive_emotions:
+            return "setting and achieving small goals"
+        else:
+            return None

@@ -140,7 +140,8 @@ const Journal = () => {
       // Add AI response with the response_id from the backend
       const aiResponse = {
         _id: response.data.response_id,
-        content: response.data.response,
+        content: response.data.response.text, // Extract the text from the response object
+        suggested_actions: response.data.response.suggested_actions, // Store suggested actions
         created_at: new Date(new Date().getTime() + 1000).toISOString(), // 1 second after user message
         isUserMessage: false,
         parent_entry_id: response.data.entry_id
@@ -358,6 +359,30 @@ const Journal = () => {
                             }}
                           >
                             <Typography variant="body1">{entry.content}</Typography>
+                          
+                          {/* Display suggested actions if available */}
+                          {!entry.isUserMessage && entry.suggested_actions && entry.suggested_actions.length > 0 && (
+                            <Box sx={{ mt: 2 }}>
+                              <Typography variant="subtitle2" sx={{ fontWeight: 'bold', mb: 1 }}>
+                                Suggested Actions:
+                              </Typography>
+                              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                                {entry.suggested_actions.map((action, index) => (
+                                  <Chip 
+                                    key={index}
+                                    label={action}
+                                    size="small"
+                                    color="primary"
+                                    variant="outlined"
+                                    sx={{ 
+                                      borderRadius: 1,
+                                      '&:hover': { backgroundColor: 'primary.light', color: 'white', cursor: 'pointer' }
+                                    }}
+                                  />
+                                ))}
+                              </Box>
+                            </Box>
+                          )}
                           </Box>
                         )}
                         

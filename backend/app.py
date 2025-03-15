@@ -199,16 +199,40 @@ def create_journal_entry():
         # Memory functionality removed as requested
         memories = []
         
-        # Generate response with memories
-        print("Generating response with memories...")
+        # Get user's emotional history for context
+        print("Retrieving emotional history...")
         try:
-            response_obj = response_generator.generate_with_memory(data['content'], emotion_data)
+            emotion_history = emotional_graph.get_emotion_history(user_email, limit=5)
+            print(f"Retrieved {len(emotion_history)} emotional history records")
+        except Exception as e:
+            print(f"Error retrieving emotional history: {str(e)}")
+            emotion_history = []
+        
+        # Get personalized suggested actions from emotional graph
+        print("Getting personalized suggested actions...")
+        try:
+            suggested_actions = emotional_graph.get_suggested_actions(user_email, emotion_data['primary_emotion'])
+            print(f"Suggested actions: {suggested_actions}")
+        except Exception as e:
+            print(f"Error getting suggested actions: {str(e)}")
+            suggested_actions = ["Take a moment to breathe", "Write down your thoughts", "Connect with a friend"]
+        
+        # Generate personalized response with emotional history
+        print("Generating personalized response...")
+        try:
+            response_obj = response_generator.generate_with_memory(
+                data['content'], 
+                emotion_data, 
+                memories=memories, 
+                suggested_actions=suggested_actions,
+                emotion_history=emotion_history
+            )
             print(f"Generated response object: {response_obj}")
         except Exception as e:
             print(f"Error generating response: {str(e)}")
             response_obj = {
                 'text': 'I appreciate your entry. How are you feeling about this?', 
-                'suggested_actions': ["Take a moment to breathe", "Write down your thoughts", "Connect with a friend"]
+                'suggested_actions': suggested_actions
             }
         
         # Store user entry in database
@@ -249,8 +273,10 @@ def create_journal_entry():
             'message': 'Journal entry created',
             'entry_id': str(user_entry_id),
             'response_id': str(ai_result.inserted_id),
-            'response': response_obj['text'],
-            'suggested_actions': response_obj.get('suggested_actions', [])
+            'response': {
+                'text': response_obj['text'],
+                'suggested_actions': response_obj.get('suggested_actions', [])
+            }
         }
         print(f"Sending response: {response_data}")
         return jsonify(response_data), 201
