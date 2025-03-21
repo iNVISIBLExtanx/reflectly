@@ -50,6 +50,12 @@ db = mongo_client.reflectly
 redis_uri = os.environ.get('REDIS_URI', 'redis://localhost:6379/0')
 redis_client = redis.from_url(redis_uri)
 
+# Initialize models
+emotion_analyzer = EmotionAnalyzer()
+response_generator = ResponseGenerator()
+goal_tracker = GoalTracker(db)
+emotional_graph = EmotionalGraph(db)
+
 # Mock Kafka producer for local development
 class MockKafkaProducer:
     def send(self, topic, value):
@@ -149,6 +155,150 @@ def get_user():
     
     return jsonify(user), 200
 
+@app.route('/api/user/stats', methods=['GET'])
+@jwt_required()
+def get_user_stats():
+    current_user = get_jwt_identity()
+    
+    # Get user's journal entries
+    entries = list(db.journal_entries.find({'user_email': current_user}))
+    
+    if not entries:
+        # Return default stats if no entries exist
+        return jsonify({
+            'total_entries': 0,
+            'streak_days': 0,
+            'avg_entries_per_day': 0,
+            'emotions': {
+                'joy': 0,
+                'sadness': 0,
+                'anger': 0,
+                'fear': 0,
+                'surprise': 0,
+                'neutral': 100
+            },
+            'entries_timeline': {
+                'dates': [],
+                'counts': []
+            },
+            'emotion_timeline': {
+                'dates': [],
+                'emotions': {
+                    'joy': [],
+                    'sadness': [],
+                    'anger': []
+                }
+            }
+        })
+    
+    # Calculate total entries
+    total_entries = len(entries)
+    
+    # Calculate streak days
+    entries_by_date = {}
+    emotions_count = {
+        'joy': 0,
+        'sadness': 0,
+        'anger': 0,
+        'fear': 0,
+        'surprise': 0,
+        'neutral': 0
+    }
+    
+    # Process entries for stats
+    for entry in entries:
+        # Count emotions
+        if 'emotion' in entry:
+            emotion = entry['emotion']
+            if emotion in emotions_count:
+                emotions_count[emotion] += 1
+            else:
+                emotions_count['neutral'] += 1
+        else:
+            emotions_count['neutral'] += 1
+        
+        # Group entries by date
+        date_str = entry['timestamp'].split('T')[0]  # Get YYYY-MM-DD part
+        if date_str not in entries_by_date:
+            entries_by_date[date_str] = []
+        entries_by_date[date_str].append(entry)
+    
+    # Calculate streak
+    dates = sorted(entries_by_date.keys(), reverse=True)
+    streak_days = 0
+    today = datetime.now().strftime('%Y-%m-%d')
+    
+    if dates and dates[0] == today:
+        streak_days = 1
+        for i in range(len(dates) - 1):
+            date1 = datetime.strptime(dates[i], '%Y-%m-%d')
+            date2 = datetime.strptime(dates[i+1], '%Y-%m-%d')
+            if (date1 - date2).days == 1:
+                streak_days += 1
+            else:
+                break
+    
+    # Calculate average entries per day
+    avg_entries_per_day = round(total_entries / len(entries_by_date), 1) if entries_by_date else 0
+    
+    # Prepare emotion distribution
+    total_emotions = sum(emotions_count.values())
+    emotion_distribution = {}
+    for emotion, count in emotions_count.items():
+        emotion_distribution[emotion] = round((count / total_emotions) * 100) if total_emotions > 0 else 0
+    
+    # Prepare timeline data (last 7 days)
+    last_7_days = []
+    counts = []
+    today = datetime.now()
+    
+    for i in range(6, -1, -1):
+        date = today - timedelta(days=i)
+        date_str = date.strftime('%Y-%m-%d')
+        display_date = date.strftime('%b %d')
+        last_7_days.append(display_date)
+        counts.append(len(entries_by_date.get(date_str, [])))
+    
+    # Prepare emotion timeline data
+    emotion_timeline = {
+        'joy': [],
+        'sadness': [],
+        'anger': []
+    }
+    
+    for i in range(6, -1, -1):
+        date = today - timedelta(days=i)
+        date_str = date.strftime('%Y-%m-%d')
+        
+        day_entries = entries_by_date.get(date_str, [])
+        day_emotions = {'joy': 0, 'sadness': 0, 'anger': 0}
+        
+        for entry in day_entries:
+            emotion = entry.get('emotion', 'neutral')
+            if emotion in day_emotions:
+                day_emotions[emotion] += 1
+        
+        # Convert to percentages
+        total = sum(day_emotions.values())
+        for emotion in emotion_timeline:
+            value = round((day_emotions[emotion] / total) * 100) if total > 0 else 0
+            emotion_timeline[emotion].append(value)
+    
+    return jsonify({
+        'total_entries': total_entries,
+        'streak_days': streak_days,
+        'avg_entries_per_day': avg_entries_per_day,
+        'emotions': emotion_distribution,
+        'entries_timeline': {
+            'dates': last_7_days,
+            'counts': counts
+        },
+        'emotion_timeline': {
+            'dates': last_7_days,
+            'emotions': emotion_timeline
+        }
+    })
+
 # Journal entry routes
 @app.route('/api/journal/entries', methods=['POST'])
 @jwt_required()
@@ -199,16 +349,40 @@ def create_journal_entry():
         # Memory functionality removed as requested
         memories = []
         
-        # Generate response with memories
-        print("Generating response with memories...")
+        # Get user's emotional history for context
+        print("Retrieving emotional history...")
         try:
-            response_obj = response_generator.generate_with_memory(data['content'], emotion_data)
+            emotion_history = emotional_graph.get_emotion_history(user_email, limit=5)
+            print(f"Retrieved {len(emotion_history)} emotional history records")
+        except Exception as e:
+            print(f"Error retrieving emotional history: {str(e)}")
+            emotion_history = []
+        
+        # Get personalized suggested actions from emotional graph
+        print("Getting personalized suggested actions...")
+        try:
+            suggested_actions = emotional_graph.get_suggested_actions(user_email, emotion_data['primary_emotion'])
+            print(f"Suggested actions: {suggested_actions}")
+        except Exception as e:
+            print(f"Error getting suggested actions: {str(e)}")
+            suggested_actions = ["Take a moment to breathe", "Write down your thoughts", "Connect with a friend"]
+        
+        # Generate personalized response with emotional history
+        print("Generating personalized response...")
+        try:
+            response_obj = response_generator.generate_with_memory(
+                data['content'], 
+                emotion_data, 
+                memories=memories, 
+                suggested_actions=suggested_actions,
+                emotion_history=emotion_history
+            )
             print(f"Generated response object: {response_obj}")
         except Exception as e:
             print(f"Error generating response: {str(e)}")
             response_obj = {
                 'text': 'I appreciate your entry. How are you feeling about this?', 
-                'suggested_actions': ["Take a moment to breathe", "Write down your thoughts", "Connect with a friend"]
+                'suggested_actions': suggested_actions
             }
         
         # Store user entry in database
@@ -249,8 +423,10 @@ def create_journal_entry():
             'message': 'Journal entry created',
             'entry_id': str(user_entry_id),
             'response_id': str(ai_result.inserted_id),
-            'response': response_obj['text'],
-            'suggested_actions': response_obj.get('suggested_actions', [])
+            'response': {
+                'text': response_obj['text'],
+                'suggested_actions': response_obj.get('suggested_actions', [])
+            }
         }
         print(f"Sending response: {response_data}")
         return jsonify(response_data), 201
@@ -437,6 +613,75 @@ def admin_view_db():
         'counts': collection_counts,
         'samples': collection_samples
     }), 200
+
+# Emotional Journey Graph route
+@app.route('/api/emotional-journey', methods=['GET'])
+@jwt_required()
+def get_emotional_journey():
+    current_user = get_jwt_identity()
+    
+    # Get user's journal entries
+    entries = list(db.journal_entries.find({'user_email': current_user}))
+    
+    if not entries:
+        # Return empty data if no entries exist
+        return jsonify({
+            'nodes': [],
+            'edges': [],
+            'optimalPath': []
+        })
+    
+    # Process entries to create nodes (emotional states)
+    nodes = []
+    for entry in entries:
+        emotion = entry.get('emotion', 'neutral')
+        timestamp = entry.get('created_at', datetime.now())
+        entry_id = str(entry.get('_id'))
+        
+        nodes.append({
+            'id': entry_id,
+            'emotion': emotion,
+            'timestamp': timestamp
+        })
+    
+    # Create edges between consecutive emotional states
+    edges = []
+    for i in range(len(nodes) - 1):
+        edges.append({
+            'source': nodes[i]['id'],
+            'target': nodes[i + 1]['id'],
+            'weight': 1  # Simple weight for demonstration
+        })
+    
+    # Generate a simple optimal path (in a real app, this would use more sophisticated algorithms)
+    # Here we're just showing a path from the most negative to most positive emotions
+    emotion_ranking = {
+        'angry': 1,
+        'sad': 2,
+        'anxious': 3,
+        'frustrated': 4,
+        'worried': 5,
+        'neutral': 6,
+        'calm': 7,
+        'content': 8,
+        'excited': 9,
+        'happy': 10
+    }
+    
+    # Extract unique emotions from entries
+    unique_emotions = set(node['emotion'] for node in nodes)
+    
+    # Sort emotions by ranking
+    sorted_emotions = sorted(list(unique_emotions), key=lambda e: emotion_ranking.get(e.lower(), 0))
+    
+    # If we have positive emotions, create a path
+    optimalPath = sorted_emotions if sorted_emotions else []
+    
+    return jsonify({
+        'nodes': nodes,
+        'edges': edges,
+        'optimalPath': optimalPath
+    })
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5002, debug=True)

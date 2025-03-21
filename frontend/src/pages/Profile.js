@@ -27,11 +27,13 @@ import MoodIcon from '@mui/icons-material/Mood';
 import TodayIcon from '@mui/icons-material/Today';
 import AccessTimeIcon from '@mui/icons-material/AccessTime';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
+import RouteIcon from '@mui/icons-material/Route';
 import { Chart as ChartJS, ArcElement, Tooltip, Legend, CategoryScale, LinearScale, PointElement, LineElement, Title, BarElement } from 'chart.js';
 import { Pie, Line, Bar } from 'react-chartjs-2';
 import { format, subDays } from 'date-fns';
 import axios from '../utils/axiosConfig';
 import { useAuth } from '../context/AuthContext';
+import EmotionalJourneyGraph from './EmotionalJourneyGraph';
 
 // Register ChartJS components
 ChartJS.register(
@@ -83,6 +85,7 @@ const Profile = () => {
   
   useEffect(() => {
     fetchStats();
+    console.log('Current tab value:', tabValue);
   }, []);
   
   const fetchStats = async () => {
@@ -103,6 +106,7 @@ const Profile = () => {
   };
   
   const handleTabChange = (event, newValue) => {
+    console.log('Changing tab to:', newValue);
     setTabValue(newValue);
   };
   
@@ -528,12 +532,14 @@ const Profile = () => {
                 value={tabValue} 
                 onChange={handleTabChange}
                 aria-label="analytics tabs"
-                variant={isMobile ? "scrollable" : "standard"}
-                scrollButtons={isMobile ? "auto" : false}
+                variant="scrollable"
+                scrollButtons="auto"
+                sx={{ maxWidth: '100%', overflowX: 'auto' }}
               >
                 <Tab label="Emotions" icon={<MoodIcon />} iconPosition="start" />
                 <Tab label="Journal Activity" icon={<TodayIcon />} iconPosition="start" />
                 <Tab label="Emotion Trends" icon={<TrendingUpIcon />} iconPosition="start" />
+                <Tab label="Emotional Journey" icon={<RouteIcon />} iconPosition="start" />
               </Tabs>
             </Box>
             
@@ -582,6 +588,18 @@ const Profile = () => {
                 <Box sx={{ height: 300, mt: 4 }}>
                   <Line data={emotionTimelineData} options={lineChartOptions} />
                 </Box>
+              </Box>
+            )}
+            
+            {/* Emotional Journey Tab */}
+            {tabValue === 3 && (
+              <Box>
+                <Typography variant="h6" gutterBottom>
+                  Your Emotional Journey
+                </Typography>
+                <Typography variant="body2" color="text.secondary" paragraph>
+                  This is a placeholder for the Emotional Journey Graph.
+                </Typography>
               </Box>
             )}
           </Paper>

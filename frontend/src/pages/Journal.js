@@ -68,10 +68,7 @@ const Journal = () => {
     }
   }, []);
   
-  // Fetch journal entries on component mount
-  useEffect(() => {
-    fetchEntries();
-  }, []);
+  // This useEffect was moved above
   
   // Scroll to bottom of messages when entries change
   useEffect(() => {
@@ -79,25 +76,24 @@ const Journal = () => {
   }, [entries]);
   
   // Ensure messages are always displayed in chronological order
+  const sortEntries = (entriesToSort) => {
+    // Sort entries by created_at in ascending order (oldest first)
+    return [...entriesToSort].sort((a, b) => {
+      return new Date(a.created_at) - new Date(b.created_at);
+    });
+  };
+  
+  // Fetch journal entries on component mount
   useEffect(() => {
-    if (entries.length > 0) {
-      // Sort entries by created_at in ascending order (oldest first)
-      const sortedEntries = [...entries].sort((a, b) => {
-        return new Date(a.created_at) - new Date(b.created_at);
-      });
-      
-      // Only update if the order has changed
-      if (JSON.stringify(sortedEntries.map(e => e._id)) !== JSON.stringify(entries.map(e => e._id))) {
-        setEntries(sortedEntries);
-      }
-    }
-  }, [entries]);
+    fetchEntries();
+  }, []);
   
   const fetchEntries = async () => {
     try {
       setIsLoading(true);
       const response = await axios.get('/api/journal/entries');
-      setEntries(response.data);
+      // Sort entries when they're fetched from the API
+      setEntries(sortEntries(response.data));
       setError(null);
     } catch (err) {
       console.error('Error fetching journal entries:', err);
@@ -127,7 +123,7 @@ const Journal = () => {
         isUserMessage: true
       };
       
-      setEntries(prev => [...prev, userEntry]);
+      setEntries(prev => sortEntries([...prev, userEntry]));
       setCurrentMessage('');
       
       // Send to API
@@ -140,7 +136,8 @@ const Journal = () => {
       // Add AI response with the response_id from the backend
       const aiResponse = {
         _id: response.data.response_id,
-        content: response.data.response,
+        content: response.data.response.text, // Extract the text from the response object
+        suggested_actions: response.data.response.suggested_actions, // Store suggested actions
         created_at: new Date(new Date().getTime() + 1000).toISOString(), // 1 second after user message
         isUserMessage: false,
         parent_entry_id: response.data.entry_id
@@ -156,7 +153,7 @@ const Journal = () => {
         );
         
         // Then add the AI response
-        const withAiResponse = [...updatedPrev, aiResponse];
+        let withAiResponse = [...updatedPrev, aiResponse];
         
         // If there's a memory reference, add it as a separate message
         if (response.data.memory && response.data.memory_id) {
@@ -171,10 +168,11 @@ const Journal = () => {
             parent_entry_id: response.data.entry_id
           };
           
-          return [...withAiResponse, memoryResponse];
+          withAiResponse = [...withAiResponse, memoryResponse];
         }
         
-        return withAiResponse;
+        // Always sort the entries by date before returning
+        return sortEntries(withAiResponse);
       });
       
       setError(null);
@@ -358,6 +356,30 @@ const Journal = () => {
                             }}
                           >
                             <Typography variant="body1">{entry.content}</Typography>
+                          
+                          {/* Display suggested actions if available */}
+                          {!entry.isUserMessage && entry.suggested_actions && entry.suggested_actions.length > 0 && (
+                            <Box sx={{ mt: 2 }}>
+                              <Typography variant="subtitle2" sx={{ fontWeight: 'bold', mb: 1 }}>
+                                Suggested Actions:
+                              </Typography>
+                              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                                {entry.suggested_actions.map((action, index) => (
+                                  <Chip 
+                                    key={index}
+                                    label={action}
+                                    size="small"
+                                    color="primary"
+                                    variant="outlined"
+                                    sx={{ 
+                                      borderRadius: 1,
+                                      '&:hover': { backgroundColor: 'primary.light', color: 'white', cursor: 'pointer' }
+                                    }}
+                                  />
+                                ))}
+                              </Box>
+                            </Box>
+                          )}
                           </Box>
                         )}
                         
