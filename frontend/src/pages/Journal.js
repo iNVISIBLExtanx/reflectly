@@ -79,19 +79,24 @@ const Journal = () => {
   }, [entries]);
   
   // Ensure messages are always displayed in chronological order
+  const sortEntries = (entriesToSort) => {
+    // Sort entries by created_at in ascending order (oldest first)
+    return [...entriesToSort].sort((a, b) => {
+      return new Date(a.created_at) - new Date(b.created_at);
+    });
+  };
+  
+  // Sort entries when they're first loaded
   useEffect(() => {
     if (entries.length > 0) {
-      // Sort entries by created_at in ascending order (oldest first)
-      const sortedEntries = [...entries].sort((a, b) => {
-        return new Date(a.created_at) - new Date(b.created_at);
-      });
+      const sortedEntries = sortEntries(entries);
       
       // Only update if the order has changed
       if (JSON.stringify(sortedEntries.map(e => e._id)) !== JSON.stringify(entries.map(e => e._id))) {
         setEntries(sortedEntries);
       }
     }
-  }, [entries]);
+  }, []); // Empty dependency array to run only once on mount
   
   const fetchEntries = async () => {
     try {
@@ -127,7 +132,7 @@ const Journal = () => {
         isUserMessage: true
       };
       
-      setEntries(prev => [...prev, userEntry]);
+      setEntries(prev => sortEntries([...prev, userEntry]));
       setCurrentMessage('');
       
       // Send to API
@@ -157,7 +162,7 @@ const Journal = () => {
         );
         
         // Then add the AI response
-        const withAiResponse = [...updatedPrev, aiResponse];
+        let withAiResponse = [...updatedPrev, aiResponse];
         
         // If there's a memory reference, add it as a separate message
         if (response.data.memory && response.data.memory_id) {
@@ -172,10 +177,11 @@ const Journal = () => {
             parent_entry_id: response.data.entry_id
           };
           
-          return [...withAiResponse, memoryResponse];
+          withAiResponse = [...withAiResponse, memoryResponse];
         }
         
-        return withAiResponse;
+        // Sort the entries by date before returning
+        return sortEntries(withAiResponse);
       });
       
       setError(null);
