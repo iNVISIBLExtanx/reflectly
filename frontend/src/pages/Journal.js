@@ -68,10 +68,7 @@ const Journal = () => {
     }
   }, []);
   
-  // Fetch journal entries on component mount
-  useEffect(() => {
-    fetchEntries();
-  }, []);
+  // This useEffect was moved above
   
   // Scroll to bottom of messages when entries change
   useEffect(() => {
@@ -86,23 +83,17 @@ const Journal = () => {
     });
   };
   
-  // Sort entries when they're first loaded
+  // Fetch journal entries on component mount
   useEffect(() => {
-    if (entries.length > 0) {
-      const sortedEntries = sortEntries(entries);
-      
-      // Only update if the order has changed
-      if (JSON.stringify(sortedEntries.map(e => e._id)) !== JSON.stringify(entries.map(e => e._id))) {
-        setEntries(sortedEntries);
-      }
-    }
-  }, []); // Empty dependency array to run only once on mount
+    fetchEntries();
+  }, []);
   
   const fetchEntries = async () => {
     try {
       setIsLoading(true);
       const response = await axios.get('/api/journal/entries');
-      setEntries(response.data);
+      // Sort entries when they're fetched from the API
+      setEntries(sortEntries(response.data));
       setError(null);
     } catch (err) {
       console.error('Error fetching journal entries:', err);
@@ -180,7 +171,7 @@ const Journal = () => {
           withAiResponse = [...withAiResponse, memoryResponse];
         }
         
-        // Sort the entries by date before returning
+        // Always sort the entries by date before returning
         return sortEntries(withAiResponse);
       });
       
