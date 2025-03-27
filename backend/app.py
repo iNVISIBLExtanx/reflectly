@@ -14,6 +14,11 @@ from models.response_generator import ResponseGenerator
 from models.goal_tracker import GoalTracker
 from models.emotional_graph import EmotionalGraph
 
+# Import AI modules
+from ai.search.astar_search_service import AStarSearchService
+from ai.probabilistic.probabilistic_service import ProbabilisticService
+from ai.agent.agent_service import AgentService
+
 # Custom JSON encoder to handle MongoDB ObjectId and datetime objects
 class MongoJSONEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -56,6 +61,11 @@ response_generator = ResponseGenerator()
 goal_tracker = GoalTracker(db)
 emotional_graph = EmotionalGraph(db)
 
+# Initialize AI services
+astar_search_service = AStarSearchService(emotional_graph)
+probabilistic_service = ProbabilisticService(db)
+agent_service = AgentService(db, astar_search_service, probabilistic_service)
+
 # Mock Kafka producer for local development
 class MockKafkaProducer:
     def send(self, topic, value):
@@ -66,12 +76,6 @@ class MockKafkaProducer:
         pass
 
 kafka_producer = MockKafkaProducer()
-
-# Initialize models
-emotion_analyzer = EmotionAnalyzer()
-response_generator = ResponseGenerator()
-goal_tracker = GoalTracker(db)
-emotional_graph = EmotionalGraph(db)
 
 # Authentication routes
 @app.route('/api/auth/register', methods=['POST'])
@@ -342,7 +346,7 @@ def create_journal_entry():
             'user_email': user_email,
             'content': data['content'],
             'emotion': emotion_data,
-            'created_at': datetime.now(),
+            'created_at': datetime.now().isoformat(),  # Ensure ISO format for frontend compatibility
             'isUserMessage': data.get('isUserMessage', True)
         }
         
@@ -354,8 +358,13 @@ def create_journal_entry():
         try:
             emotion_history = emotional_graph.get_emotion_history(user_email, limit=5)
             print(f"Retrieved {len(emotion_history)} emotional history records")
+            # Debug the emotion history structure
+            for i, entry in enumerate(emotion_history[:3]):
+                print(f"Emotion history entry {i}: {entry.get('primary_emotion', 'unknown')}")
         except Exception as e:
             print(f"Error retrieving emotional history: {str(e)}")
+            import traceback
+            traceback.print_exc()
             emotion_history = []
         
         # Get personalized suggested actions from emotional graph
@@ -366,22 +375,93 @@ def create_journal_entry():
         except Exception as e:
             print(f"Error getting suggested actions: {str(e)}")
             suggested_actions = ["Take a moment to breathe", "Write down your thoughts", "Connect with a friend"]
+            
+        # Get next emotion prediction using probabilistic service
+        print("Predicting next emotion...")
+        try:
+            # Always retrain the emotional model with new data before prediction
+            print("Retraining emotional model with new data...")
+            probabilistic_service.retrain_model(user_email)
+            
+            # Check if this is stress-related
+            is_stressed = 'stress' in data['content'].lower() and emotion_data['primary_emotion'] == 'fear'
+            if is_stressed:
+                print("Detected stress in the journal entry")
+                # Override the primary emotion for better handling
+                emotion_data['primary_emotion_original'] = emotion_data['primary_emotion']
+                emotion_data['primary_emotion'] = 'stressed'
+            
+            # Now predict the next emotion
+            prediction = probabilistic_service.predict_next_emotion(user_email, emotion_data['primary_emotion'])
+            print(f"Predicted next emotion: {prediction}")
+            # Add prediction to emotion data
+            emotion_data['prediction'] = prediction
+        except Exception as e:
+            print(f"Error predicting next emotion: {str(e)}")
+            
+        # Get action plan using agent service if user is in a negative emotional state
+        print("Checking if action plan is needed...")
+        action_plan = None
+        try:
+            if emotion_data.get('is_positive', True) == False:
+                print("Creating action plan for negative emotion...")
+                action_plan = agent_service.create_action_plan(
+                    user_email,
+                    emotion_data['primary_emotion'],
+                    'joy',  # Target a positive emotion
+                    {'journal_content': data['content']}
+                )
+                print(f"Created action plan: {action_plan}")
+        except Exception as e:
+            print(f"Error creating action plan: {str(e)}")
         
         # Generate personalized response with emotional history
         print("Generating personalized response...")
         try:
+            # Track emotional changes
+            print("Checking for emotional state changes...")
+            
+            # Add action plan to context if available
+            context = {
+                'emotion_history': emotion_history,
+                'memories': memories,
+                'suggested_actions': suggested_actions
+            }
+            
+            # Debug the context being passed
+            print(f"Passing emotion history with {len(emotion_history)} entries to response generator")
+            
+            if action_plan:
+                context['action_plan'] = action_plan
+                
+            if 'prediction' in emotion_data:
+                context['prediction'] = emotion_data['prediction']
+                
             response_obj = response_generator.generate_with_memory(
                 data['content'], 
                 emotion_data, 
-                memories=memories, 
-                suggested_actions=suggested_actions,
-                emotion_history=emotion_history
+                **context
             )
+            
+            # Add emotional change information to response if available
+            if response_obj.get('emotion_changed'):
+                print(f"Emotion changed from {response_obj.get('previous_emotion')} to {response_obj.get('current_emotion')}")
+                
             print(f"Generated response object: {response_obj}")
         except Exception as e:
             print(f"Error generating response: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            # Provide a more varied fallback response
+            fallback_responses = [
+                'I appreciate your entry. How are you feeling about this?',
+                'Thank you for sharing. Would you like to tell me more about what happened?',
+                'I understand. What else is on your mind today?',
+                'Thanks for writing this down. How did this situation affect you?',
+                'I value your thoughts. Is there anything specific you want to reflect on?'
+            ]
             response_obj = {
-                'text': 'I appreciate your entry. How are you feeling about this?', 
+                'text': random.choice(fallback_responses), 
                 'suggested_actions': suggested_actions
             }
         
@@ -395,9 +475,10 @@ def create_journal_entry():
         ai_entry = {
             'user_email': user_email,
             'content': response_obj['text'],
-            'created_at': datetime.now(),
+            'created_at': datetime.now().isoformat(),  # Ensure ISO format for frontend compatibility
             'isUserMessage': False,
-            'parent_entry_id': str(user_entry_id)
+            'parent_entry_id': str(user_entry_id),
+            'suggested_actions': response_obj.get('suggested_actions', [])  # Include suggested actions
         }
         
         ai_result = db.journal_entries.insert_one(ai_entry)
@@ -426,8 +507,17 @@ def create_journal_entry():
             'response': {
                 'text': response_obj['text'],
                 'suggested_actions': response_obj.get('suggested_actions', [])
-            }
+            },
+            'emotion': emotion_data
         }
+        
+        # Add prediction if available
+        if 'prediction' in emotion_data:
+            response_data['prediction'] = emotion_data['prediction']
+            
+        # Add action plan if available
+        if action_plan:
+            response_data['action_plan'] = action_plan
         print(f"Sending response: {response_data}")
         return jsonify(response_data), 201
     except Exception as e:
@@ -653,35 +743,263 @@ def get_emotional_journey():
             'weight': 1  # Simple weight for demonstration
         })
     
-    # Generate a simple optimal path (in a real app, this would use more sophisticated algorithms)
-    # Here we're just showing a path from the most negative to most positive emotions
-    emotion_ranking = {
-        'angry': 1,
-        'sad': 2,
-        'anxious': 3,
-        'frustrated': 4,
-        'worried': 5,
-        'neutral': 6,
-        'calm': 7,
-        'content': 8,
-        'excited': 9,
-        'happy': 10
-    }
+    # Get the user's current emotional state
+    current_emotion = 'neutral'
+    if nodes:
+        current_emotion = nodes[-1]['emotion']
     
-    # Extract unique emotions from entries
-    unique_emotions = set(node['emotion'] for node in nodes)
+    # Define target emotion (a positive emotion)
+    target_emotion = 'joy'
     
-    # Sort emotions by ranking
-    sorted_emotions = sorted(list(unique_emotions), key=lambda e: emotion_ranking.get(e.lower(), 0))
-    
-    # If we have positive emotions, create a path
-    optimalPath = sorted_emotions if sorted_emotions else []
+    # Generate optimal path using A* search
+    try:
+        path_result = astar_search_service.find_path(current_user, current_emotion, target_emotion)
+        optimalPath = path_result.get('path', [])
+        optimalActions = path_result.get('actions', [])
+    except Exception as e:
+        print(f"Error generating optimal path: {str(e)}")
+        # Fallback to a simple path if A* search fails
+        emotion_ranking = {
+            'angry': 1,
+            'sad': 2,
+            'anxious': 3,
+            'frustrated': 4,
+            'worried': 5,
+            'neutral': 6,
+            'calm': 7,
+            'content': 8,
+            'excited': 9,
+            'happy': 10,
+            'joy': 11
+        }
+        
+        # Extract unique emotions from entries
+        unique_emotions = set(node['emotion'] for node in nodes)
+        
+        # Sort emotions by ranking
+        sorted_emotions = sorted(list(unique_emotions), key=lambda e: emotion_ranking.get(e.lower(), 0))
+        
+        # If we have positive emotions, create a path
+        optimalPath = sorted_emotions if sorted_emotions else []
+        optimalActions = []
     
     return jsonify({
         'nodes': nodes,
         'edges': edges,
-        'optimalPath': optimalPath
+        'optimalPath': optimalPath,
+        'optimalActions': optimalActions
     })
+
+# A* Search routes
+@app.route('/api/emotional-path', methods=['POST'])
+@jwt_required()
+def find_emotional_path():
+    try:
+        user_email = get_jwt_identity()
+        data = request.get_json()
+        
+        # Validate input data
+        if not data or 'current_emotion' not in data or 'target_emotion' not in data:
+            return jsonify({'message': 'Missing required parameters'}), 400
+            
+        current_emotion = data['current_emotion']
+        target_emotion = data['target_emotion']
+        max_depth = data.get('max_depth', 10)
+        
+        # Find optimal path using A* search
+        path_result = astar_search_service.find_path(user_email, current_emotion, target_emotion, max_depth)
+        
+        return jsonify(path_result), 200
+    except Exception as e:
+        print(f"Error in find_emotional_path: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+# Probabilistic Reasoning routes
+@app.route('/api/predict/emotion', methods=['POST'])
+@jwt_required()
+def predict_next_emotion():
+    try:
+        user_email = get_jwt_identity()
+        data = request.get_json()
+        
+        # Validate input data
+        if not data or 'current_emotion' not in data:
+            return jsonify({'message': 'Missing current_emotion in request'}), 400
+            
+        current_emotion = data['current_emotion']
+        model_type = data.get('model_type', 'markov')  # Default to Markov model
+        
+        # Get prediction using probabilistic service
+        prediction_result = probabilistic_service.predict_next_emotion(
+            user_email, 
+            current_emotion, 
+            model_type
+        )
+        
+        return jsonify(prediction_result), 200
+    except Exception as e:
+        print(f"Error in predict_next_emotion: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+        
+@app.route('/api/predict/emotional-sequence', methods=['POST'])
+@jwt_required()
+def predict_emotional_sequence():
+    try:
+        user_email = get_jwt_identity()
+        data = request.get_json()
+        
+        # Validate input data
+        if not data or 'current_emotion' not in data or 'sequence_length' not in data:
+            return jsonify({'message': 'Missing required parameters'}), 400
+            
+        current_emotion = data['current_emotion']
+        sequence_length = data['sequence_length']
+        model_type = data.get('model_type', 'markov')  # Default to Markov model
+        
+        # Get prediction using probabilistic service
+        sequence_result = probabilistic_service.predict_emotional_sequence(
+            user_email, 
+            current_emotion, 
+            sequence_length, 
+            model_type
+        )
+        
+        return jsonify(sequence_result), 200
+    except Exception as e:
+        print(f"Error in predict_emotional_sequence: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+# Intelligent Agent routes
+@app.route('/api/agent/state', methods=['GET'])
+@jwt_required()
+def get_agent_state():
+    try:
+        user_email = get_jwt_identity()
+        
+        # Get agent state
+        state = agent_service.get_agent_state(user_email)
+        
+        return jsonify(state), 200
+    except Exception as e:
+        print(f"Error in get_agent_state: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/agent/plan', methods=['POST'])
+@jwt_required()
+def create_action_plan():
+    try:
+        user_email = get_jwt_identity()
+        data = request.get_json()
+        
+        # Validate input data
+        if not data or 'current_emotion' not in data or 'target_emotion' not in data:
+            return jsonify({'message': 'Missing required parameters'}), 400
+            
+        current_emotion = data['current_emotion']
+        target_emotion = data['target_emotion']
+        context = data.get('context', {})
+        
+        # Create action plan
+        plan = agent_service.create_action_plan(
+            user_email, 
+            current_emotion, 
+            target_emotion
+        )
+        
+        return jsonify(plan), 200
+    except Exception as e:
+        print(f"Error in create_action_plan: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/agent/execute', methods=['POST'])
+@jwt_required()
+def execute_action():
+    try:
+        user_email = get_jwt_identity()
+        data = request.get_json()
+        
+        # Validate input data
+        if not data or 'action_id' not in data:
+            return jsonify({'message': 'Missing action_id in request'}), 400
+            
+        action_id = data['action_id']
+        feedback = data.get('feedback', {})
+        
+        # Execute action
+        result = agent_service.execute_action(
+            user_email, 
+            action_id, 
+            feedback
+        )
+        
+        return jsonify(result), 200
+    except Exception as e:
+        print(f"Error in execute_action: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/agent/analyze-decision', methods=['POST'])
+@jwt_required()
+def analyze_decision():
+    """Analyze a decision with multiple options."""
+    try:
+        user_email = get_jwt_identity()
+        data = request.get_json()
+        
+        # Validate input data
+        if not data or 'current_emotion' not in data or 'decision' not in data or 'options' not in data:
+            return jsonify({'message': 'Missing required parameters'}), 400
+            
+        current_emotion = data['current_emotion']
+        decision = data['decision']
+        options = data['options']
+        
+        # Analyze the decision using the agent service
+        analysis = agent_service.analyze_decision(
+            user_email,
+            current_emotion,
+            decision,
+            options
+        )
+        
+        return jsonify(analysis), 200
+    except Exception as e:
+        print(f"Error in analyze_decision: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/probabilistic/emotional-graph', methods=['GET'])
+@jwt_required()
+def get_emotional_graph():
+    """Get the emotional graph with transition probabilities."""
+    try:
+        user_email = get_jwt_identity()
+        
+        # Get the user's emotion history
+        emotion_history = emotional_graph.get_emotion_history(user_email, limit=20)
+        emotion_sequence = [entry.get('primary_emotion', 'neutral') for entry in emotion_history]
+        
+        # Get the transition probabilities from the probabilistic service
+        graph = probabilistic_service.get_emotional_graph(user_email, emotion_sequence)
+        
+        return jsonify({'graph': graph}), 200
+    except Exception as e:
+        print(f"Error in get_emotional_graph: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5002, debug=True)

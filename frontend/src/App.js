@@ -17,6 +17,8 @@ import Goals from './pages/Goals';
 import Memories from './pages/Memories';
 import Profile from './pages/Profile';
 import NotFound from './pages/NotFound';
+import EmotionalJourney from './pages/EmotionalJourney';
+import DecisionExplorer from './pages/DecisionExplorer';
 
 // Protected route component
 const ProtectedRoute = ({ children }) => {
@@ -82,6 +84,16 @@ function App() {
           <Route path="/profile" element={
             <ProtectedRoute>
               <Profile />
+            </ProtectedRoute>
+          } />
+          <Route path="/emotional-journey" element={
+            <ProtectedRoute>
+              <EmotionalJourney />
+            </ProtectedRoute>
+          } />
+          <Route path="/decision-explorer" element={
+            <ProtectedRoute>
+              <DecisionExplorer />
             </ProtectedRoute>
           } />
           <Route path="*" element={<NotFound />} />

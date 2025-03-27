@@ -146,7 +146,7 @@ class EmotionAnalyzer:
             primary_emotion = 'sadness'
         elif any(word in text_lower for word in ['angry', 'mad', 'furious', 'annoyed', 'irritated', 'enraged', 'frustrated']):
             primary_emotion = 'anger'
-        elif any(word in text_lower for word in ['afraid', 'scared', 'worried', 'anxious', 'terrified', 'nervous', 'fearful']):
+        elif any(word in text_lower for word in ['afraid', 'scared', 'worried', 'anxious', 'terrified', 'nervous', 'fearful', 'stressed']):
             primary_emotion = 'fear'
         elif any(word in text_lower for word in ['surprised', 'shocked', 'amazed', 'astonished', 'stunned']):
             primary_emotion = 'surprise'

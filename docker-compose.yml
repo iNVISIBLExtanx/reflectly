@@ -5,6 +5,9 @@ services:
     build: ./frontend
     ports:
       - "3000:3000"
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
     depends_on:
       - backend
     networks:
@@ -14,6 +17,9 @@ services:
     build: ./backend
     ports:
       - "5002:5002"
+    volumes:
+      - ./backend:/app
+      - ./ai:/app/ai
     depends_on:
       - mongodb
       - redis

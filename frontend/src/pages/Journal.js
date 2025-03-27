@@ -140,7 +140,11 @@ const Journal = () => {
         suggested_actions: response.data.response.suggested_actions, // Store suggested actions
         created_at: new Date(new Date().getTime() + 1000).toISOString(), // 1 second after user message
         isUserMessage: false,
-        parent_entry_id: response.data.entry_id
+        parent_entry_id: response.data.entry_id,
+        // Add emotion change information if available
+        emotion_changed: response.data.response.emotion_changed || false,
+        previous_emotion: response.data.response.previous_emotion || null,
+        current_emotion: response.data.response.current_emotion || null
       };
       
       // Replace the temporary user message with the permanent one and add AI response
@@ -225,8 +229,23 @@ const Journal = () => {
   };
   
   const formatDate = (dateString) => {
-    const date = new Date(dateString);
-    return format(date, 'MMM d, yyyy h:mm a');
+    try {
+      // Check if dateString is valid
+      if (!dateString) return 'Unknown date';
+      
+      const date = new Date(dateString);
+      
+      // Check if date is valid
+      if (isNaN(date.getTime())) {
+        console.warn('Invalid date:', dateString);
+        return 'Unknown date';
+      }
+      
+      return format(date, 'MMM d, yyyy h:mm a');
+    } catch (error) {
+      console.error('Error formatting date:', error, dateString);
+      return 'Unknown date';
+    }
   };
   
   return (
@@ -255,7 +274,14 @@ const Journal = () => {
           <Typography variant="h6">Journal</Typography>
           <Chip 
             icon={<CalendarTodayIcon />} 
-            label={format(new Date(), 'EEEE, MMMM d')} 
+            label={(() => {
+              try {
+                return format(new Date(), 'EEEE, MMMM d');
+              } catch (error) {
+                console.error('Error formatting header date:', error);
+                return 'Today';
+              }
+            })()} 
             sx={{ 
               color: 'white', 
               '& .MuiChip-icon': { color: 'white' } 
@@ -294,8 +320,22 @@ const Journal = () => {
                   <Box sx={{ mb: 2 }}>
                     {/* Date divider if it's a new day */}
                     {index === 0 || 
-                      format(new Date(entry.created_at), 'yyyy-MM-dd') !== 
-                      format(new Date(entries[index - 1].created_at), 'yyyy-MM-dd') ? (
+                      (() => {
+                        try {
+                          const currentDate = new Date(entry.created_at);
+                          const prevDate = new Date(entries[index - 1].created_at);
+                          
+                          // Check if dates are valid
+                          if (isNaN(currentDate.getTime()) || isNaN(prevDate.getTime())) {
+                            return false;
+                          }
+                          
+                          return format(currentDate, 'yyyy-MM-dd') !== format(prevDate, 'yyyy-MM-dd');
+                        } catch (error) {
+                          console.error('Error comparing dates:', error);
+                          return false;
+                        }
+                      })() ? (
                       <Box 
                         sx={{ 
                           display: 'flex', 
@@ -306,7 +346,16 @@ const Journal = () => {
                       >
                         <Divider sx={{ flexGrow: 1 }} />
                         <Chip 
-                          label={format(new Date(entry.created_at), 'EEEE, MMMM d')} 
+                          label={(() => {
+                            try {
+                              const date = new Date(entry.created_at);
+                              if (isNaN(date.getTime())) return 'Unknown date';
+                              return format(date, 'EEEE, MMMM d');
+                            } catch (error) {
+                              console.error('Error formatting date chip:', error);
+                              return 'Unknown date';
+                            }
+                          })()} 
                           size="small" 
                           sx={{ mx: 2 }} 
                         />

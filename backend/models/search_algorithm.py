@@ -376,6 +376,38 @@ class AStarSearch:
         return neighbors
         
     def get_default_action(self, from_emotion, to_emotion):
+        # Get available emotions
+        available_emotions = self.emotional_graph.get_available_emotions()
+        if not available_emotions:
+            available_emotions = ["joy", "sadness", "anger", "fear", "disgust", "neutral"]
+        
+        # Map unknown emotions to standard emotions
+        emotion_mapping = {
+            # Positive emotions
+            "happy": "joy",
+            "excited": "joy",
+            "content": "joy",
+            "calm": "neutral",
+            # Negative emotions
+            "stressed": "fear",
+            "anxious": "fear",
+            "worried": "fear",
+            "depressed": "sadness",
+            "frustrated": "anger",
+            "annoyed": "anger",
+            "disgusted": "disgust"
+        }
+        
+        # Map emotions if they are not in the standard set
+        from_emotion_mapped = emotion_mapping.get(from_emotion.lower(), from_emotion)
+        to_emotion_mapped = emotion_mapping.get(to_emotion.lower(), to_emotion)
+        
+        # If the mapped emotions are still not in the available emotions, default to neutral
+        if from_emotion_mapped not in available_emotions:
+            from_emotion_mapped = "neutral"
+        if to_emotion_mapped not in available_emotions:
+            to_emotion_mapped = "neutral"
+        
         """
         Get default action for a transition
         
@@ -426,22 +458,22 @@ class AStarSearch:
         }
         
         # Get default action
-        emotion_pair = (from_emotion, to_emotion)
+        emotion_pair = (from_emotion_mapped, to_emotion_mapped)
         default_action = default_actions.get(emotion_pair)
         
         # If no default action found, use generic action
         if not default_action:
-            if to_emotion == "joy":
+            if to_emotion_mapped == "joy":
                 default_action = "Focus on positive aspects of your life"
-            elif to_emotion == "neutral":
+            elif to_emotion_mapped == "neutral":
                 default_action = "Practice mindfulness and stay present"
-            elif to_emotion == "sadness":
+            elif to_emotion_mapped == "sadness":
                 default_action = "Allow yourself to process emotions"
-            elif to_emotion == "anger":
+            elif to_emotion_mapped == "anger":
                 default_action = "Express feelings constructively"
-            elif to_emotion == "fear":
+            elif to_emotion_mapped == "fear":
                 default_action = "Identify and address specific concerns"
-            elif to_emotion == "disgust":
+            elif to_emotion_mapped == "disgust":
                 default_action = "Examine your values and boundaries"
             else:
                 default_action = "Reflect on your feelings"

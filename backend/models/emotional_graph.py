@@ -20,9 +20,12 @@ class EmotionalGraph:
         self.transitions_collection = db.emotional_transitions
         
         # Define positive and negative emotions
-        self.positive_emotions = ['joy', 'surprise']
-        self.negative_emotions = ['sadness', 'anger', 'fear', 'disgust']
+        self.positive_emotions = ['joy', 'surprise', 'happy', 'excited', 'content', 'calm']
+        self.negative_emotions = ['sadness', 'anger', 'fear', 'disgust', 'sad', 'anxious', 'frustrated', 'stressed']
         self.neutral_emotions = ['neutral']
+        
+        # Define stress-related emotions for special handling
+        self.stress_emotions = ['stressed', 'anxious', 'overwhelmed', 'worried']
         
     def record_emotion(self, user_email, emotion_data, entry_id=None):
         """
@@ -131,6 +134,108 @@ class EmotionalGraph:
             state['_id'] = str(state['_id'])
         
         return states
+        
+    def analyze_stress_patterns(self, user_email, days=30):
+        """
+        Analyze stress patterns over a specified time period.
+        
+        Args:
+            user_email (str): The user's email
+            days (int): Number of days to analyze
+            
+        Returns:
+            dict: Analysis of stress patterns including frequency, triggers, and recommendations
+        """
+        # Calculate the start date for analysis
+        start_date = datetime.datetime.now() - datetime.timedelta(days=days)
+        
+        # Find all emotional states in the given time period
+        states = list(self.emotions_collection.find(
+            {
+                'user_email': user_email,
+                'timestamp': {'$gte': start_date}
+            },
+            sort=[('timestamp', 1)]  # Sort by timestamp ascending
+        ))
+        
+        # Count stress-related emotions
+        stress_count = 0
+        stress_dates = []
+        stress_entries = []
+        
+        for state in states:
+            # Check if this is a stress-related emotion
+            is_stress_related = False
+            
+            # Check primary emotion
+            if state['primary_emotion'] in self.stress_emotions:
+                is_stress_related = True
+            # Also check if 'fear' with high score might indicate stress
+            elif state['primary_emotion'] == 'fear' and state.get('entry_id'):
+                # Look up the entry to check content
+                entry = self.db.journal_entries.find_one({'_id': ObjectId(state['entry_id'])})
+                if entry and 'content' in entry and 'stress' in entry['content'].lower():
+                    is_stress_related = True
+                    
+            if is_stress_related:
+                stress_count += 1
+                stress_dates.append(state['timestamp'].strftime('%Y-%m-%d'))
+                if state.get('entry_id'):
+                    stress_entries.append(state['entry_id'])
+        
+        # Calculate frequency
+        total_days = min(days, (datetime.datetime.now() - start_date).days + 1)
+        frequency = stress_count / total_days if total_days > 0 else 0
+        
+        # Get common triggers if we have stress entries
+        triggers = []
+        if stress_entries:
+            entries = list(self.db.journal_entries.find({'_id': {'$in': [ObjectId(id) for id in stress_entries]}}))            
+            # Simple keyword analysis for common triggers
+            trigger_keywords = ['work', 'deadline', 'meeting', 'family', 'health', 'money', 'relationship', 'sleep']
+            trigger_counts = {keyword: 0 for keyword in trigger_keywords}
+            
+            for entry in entries:
+                if 'content' in entry:
+                    content = entry['content'].lower()
+                    for keyword in trigger_keywords:
+                        if keyword in content:
+                            trigger_counts[keyword] += 1
+            
+            # Get top triggers
+            triggers = [k for k, v in sorted(trigger_counts.items(), key=lambda item: item[1], reverse=True) if v > 0][:3]
+        
+        # Generate recommendations based on frequency and triggers
+        recommendations = []
+        if frequency > 0.5:  # More than 50% of days have stress
+            recommendations.append("You're experiencing frequent stress. Consider speaking with a mental health professional.")
+            recommendations.append("Daily stress management practices like meditation may be beneficial.")
+        elif frequency > 0.2:  # More than 20% of days have stress
+            recommendations.append("You're experiencing moderate stress levels. Regular exercise and mindfulness can help.")
+        else:
+            recommendations.append("Your stress levels appear manageable. Continue your current coping strategies.")
+            
+        # Add trigger-specific recommendations
+        for trigger in triggers:
+            if trigger == 'work' or trigger == 'deadline':
+                recommendations.append("Work-related stress: Try time-blocking techniques and setting boundaries.")
+            elif trigger == 'family' or trigger == 'relationship':
+                recommendations.append("Relationship stress: Open communication and setting healthy boundaries may help.")
+            elif trigger == 'health':
+                recommendations.append("Health-related stress: Regular check-ups and self-care are important.")
+            elif trigger == 'money':
+                recommendations.append("Financial stress: Creating a budget and speaking with a financial advisor might help.")
+            elif trigger == 'sleep':
+                recommendations.append("Sleep-related stress: Establish a consistent sleep schedule and bedtime routine.")
+        
+        return {
+            'stress_frequency': frequency,
+            'stress_count': stress_count,
+            'total_days': total_days,
+            'common_triggers': triggers,
+            'recommendations': recommendations,
+            'stress_dates': stress_dates
+        }
     
     def get_suggested_actions(self, user_email, current_emotion):
         """
@@ -163,6 +268,15 @@ class EmotionalGraph:
                 "Challenge negative thoughts",
                 "Talk to someone you trust",
                 "Create a plan to address your concerns"
+            ],
+            'stressed': [
+                "Try the 4-7-8 breathing technique (inhale for 4, hold for 7, exhale for 8)",
+                "Take a 10-minute break from your current task",
+                "Go for a short walk outside",
+                "Practice mindfulness meditation for 5 minutes",
+                "Write down your top 3 priorities to gain clarity",
+                "Stretch or do gentle yoga poses",
+                "Listen to calming music"
             ],
             'disgust': [
                 "Redirect your attention to something positive",
@@ -318,3 +432,170 @@ class EmotionalGraph:
             return "setting and achieving small goals"
         else:
             return None
+            
+    def get_graph(self):
+        """
+        Get the emotional graph structure as a dictionary suitable for A* search.
+        
+        Returns:
+            dict: A dictionary where keys are emotion names and values are dictionaries
+                  mapping to connected emotions with their transition costs.
+        """
+        # Get all unique emotions from the database
+        all_emotions = set(self.positive_emotions + self.negative_emotions + self.neutral_emotions)
+        
+        # Initialize the graph structure
+        graph = {emotion: {} for emotion in all_emotions}
+        
+        # Populate the graph with transitions from the database
+        # Aggregate transitions to get counts and calculate probabilities
+        pipeline = [
+            {"$group": {
+                "_id": {"from": "$from_emotion", "to": "$to_emotion"},
+                "count": {"$sum": 1}
+            }}
+        ]
+        
+        transition_counts = list(self.transitions_collection.aggregate(pipeline))
+        
+        # Calculate transition costs (inverse of frequency)
+        for transition in transition_counts:
+            from_emotion = transition["_id"]["from"]
+            to_emotion = transition["_id"]["to"]
+            count = transition["count"]
+            
+            # Higher count means lower cost (1/count)
+            # Add a small constant to avoid division by zero
+            cost = 1.0 / (count + 0.1)
+            
+            if from_emotion in graph and to_emotion in all_emotions:
+                graph[from_emotion][to_emotion] = cost
+        
+        # Ensure all emotions have at least some connections
+        # If an emotion has no outgoing transitions, add connections to all emotions with high cost
+        for emotion in all_emotions:
+            if not graph[emotion]:
+                for other in all_emotions:
+                    if other != emotion:
+                        graph[emotion][other] = 10.0  # High cost for rarely observed transitions
+        
+        return graph
+        
+    def get_transition_actions(self, user_email, from_emotion, to_emotion):
+        """
+        Get suggested actions for transitioning from one emotional state to another.
+        
+        Args:
+            user_email (str): The user's email
+            from_emotion (str): Starting emotional state
+            to_emotion (str): Target emotional state
+            
+        Returns:
+            list: List of suggested actions
+        """
+        # Check if there's a recorded transition between these emotions for this user
+        transition = self.transitions_collection.find_one({
+            'user_email': user_email,
+            'from_emotion': from_emotion,
+            'to_emotion': to_emotion
+        })
+        
+        if transition and 'actions' in transition:
+            return transition['actions']
+        
+        # If no user-specific transition, check for default transitions
+        default_transition = self.transitions_collection.find_one({
+            'user_email': 'default',
+            'from_emotion': from_emotion,
+            'to_emotion': to_emotion
+        })
+        
+        if default_transition and 'actions' in default_transition:
+            return default_transition['actions']
+        
+        # If still no actions, return empty list
+        return []
+        
+    def get_transition_probabilities(self, user_email):
+        """
+        Get transition probabilities between emotional states for a user.
+        
+        Args:
+            user_email (str): The user's email
+            
+        Returns:
+            dict: Dictionary mapping from_emotion to a dictionary mapping to_emotion to probability
+        """
+        # Get all transitions for this user
+        transitions = list(self.transitions_collection.find({
+            'user_email': user_email
+        }))
+        
+        # If no user-specific transitions, get default transitions
+        if not transitions:
+            transitions = list(self.transitions_collection.find({
+                'user_email': 'default'
+            }))
+        
+        # Create transition probability dictionary
+        transition_probs = {}
+        for transition in transitions:
+            from_emotion = transition.get('from_emotion')
+            to_emotion = transition.get('to_emotion')
+            probability = transition.get('probability', 0.5)  # Default to 0.5 if not specified
+            
+            if from_emotion not in transition_probs:
+                transition_probs[from_emotion] = {}
+            
+            transition_probs[from_emotion][to_emotion] = probability
+        
+        return transition_probs
+        
+    def get_user_history(self, user_email):
+        """
+        Get user's historical emotional transitions and their effectiveness.
+        
+        Args:
+            user_email (str): The user's email
+            
+        Returns:
+            dict: Dictionary containing user's historical emotional transitions and their effectiveness
+        """
+        # Get all emotional states for this user
+        emotional_states = list(self.emotions_collection.find({
+            'user_email': user_email
+        }).sort('timestamp', 1))  # Sort by timestamp ascending
+        
+        # Create user history dictionary
+        user_history = {}
+        
+        # Process emotional states to extract transitions
+        for i in range(len(emotional_states) - 1):
+            current_state = emotional_states[i]
+            next_state = emotional_states[i + 1]
+            
+            current_emotion = current_state.get('primary_emotion', 'neutral')
+            next_emotion = next_state.get('primary_emotion', 'neutral')
+            
+            # Calculate time difference between states
+            time_diff = (next_state.get('timestamp') - current_state.get('timestamp')).total_seconds()
+            
+            # Determine if transition was effective (shorter time is more effective)
+            effectiveness = 1.0 / (1.0 + time_diff / 3600.0)  # Normalize by hours
+            
+            # Add to user history
+            if current_emotion not in user_history:
+                user_history[current_emotion] = {}
+            
+            if next_emotion not in user_history[current_emotion]:
+                user_history[current_emotion][next_emotion] = []
+            
+            user_history[current_emotion][next_emotion].append(effectiveness)
+        
+        # Average effectiveness for each transition
+        for from_emotion in user_history:
+            for to_emotion in user_history[from_emotion]:
+                effectiveness_list = user_history[from_emotion][to_emotion]
+                user_history[from_emotion][to_emotion] = sum(effectiveness_list) / len(effectiveness_list)
+        
+        return user_history
