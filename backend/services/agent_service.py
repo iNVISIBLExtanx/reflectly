@@ -203,6 +203,156 @@ class AgentService:
             # Return plan with ID
             plan['id'] = str(plan_id)
             return plan
+        except Exception as e:
+            print(f"Error in AgentService.create_action_plan: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {
+                'message': f'Error creating action plan: {str(e)}',
+                'status': 'error'
+            }
+            
+    def analyze_emotional_journey(self, user_email, time_period='week', include_insights=False):
+        """
+        Analyze a user's emotional journey over a specified time period
+        
+        Args:
+            user_email: User's email
+            time_period: Time period for analysis (week, month, all)
+            include_insights: Whether to include insights in the result
+            
+        Returns:
+            Dictionary with emotional journey data
+        """
+        try:
+            print(f"DEBUG: analyze_emotional_journey called for user {user_email}, time_period={time_period}, include_insights={include_insights}")
+            # Get time filter based on time period
+            time_filter = {}
+            from datetime import datetime, timedelta
+            now = datetime.now()
+            print(f"DEBUG: Current time: {now}")
+            
+            if time_period != 'all':
+                if time_period == 'week':
+                    start_date = now - timedelta(days=7)
+                    time_filter = {'created_at': {'$gte': start_date}}
+                    print(f"DEBUG: Week filter from {start_date}")
+                elif time_period == 'month':
+                    start_date = now - timedelta(days=30)
+                    time_filter = {'created_at': {'$gte': start_date}}
+                    print(f"DEBUG: Month filter from {start_date}")
+            
+            # Query database for journal entries
+            query = {'user_email': user_email}
+            query.update(time_filter)
+            print(f"DEBUG: MongoDB query: {query}")
+            
+            # Check total entries for user regardless of time filter
+            total_entries = self.db.journal_entries.count_documents({'user_email': user_email})
+            print(f"DEBUG: Total entries for user: {total_entries}")
+            
+            # Get a sample entry to examine its structure
+            sample_entry = self.db.journal_entries.find_one({'user_email': user_email})
+            if sample_entry:
+                print(f"DEBUG: Sample entry: {sample_entry}")
+                print(f"DEBUG: Sample entry created_at type: {type(sample_entry.get('created_at'))}")
+                print(f"DEBUG: Sample entry created_at value: {sample_entry.get('created_at')}")
+            
+            # Get entries sorted by date
+            entries = list(self.db.journal_entries.find(query).sort('created_at', 1))
+            print(f"DEBUG: Found {len(entries)} entries matching the time filter")
+                        # Process entries to create data points
+            data_points = []
+            for entry in entries:
+                # Skip entries that are explicitly marked as AI responses (not user messages)
+                # If isUserMessage is None or not present, assume it's a user message
+                if entry.get('isUserMessage') is False:  # explicitly check for False
+                    print(f"DEBUG: Skipping AI response entry: {entry.get('_id')}")
+                    continue
+                    
+                print(f"DEBUG: Processing entry with isUserMessage={entry.get('isUserMessage')}")
+                    
+                # Extract the emotion - handle both old and new data format
+                emotion_data = entry.get('emotion', {})
+                if isinstance(emotion_data, dict) and 'primary_emotion' in emotion_data:
+                    # New format - emotion is an object with primary_emotion
+                    emotion = emotion_data.get('primary_emotion', 'neutral')
+                    intensity = max(emotion_data.get('emotion_scores', {}).values()) if emotion_data.get('emotion_scores') else 0.5
+                else:
+                    # Old format - emotion is a string
+                    emotion = emotion_data if isinstance(emotion_data, str) else 'neutral'
+                    intensity = entry.get('intensity', 0.5)
+                
+                # Format the timestamp properly
+                created_at = entry.get('created_at')
+                if isinstance(created_at, datetime):
+                    timestamp = created_at.isoformat()
+                else:
+                    timestamp = str(created_at)
+                    
+                print(f"DEBUG: Creating data point for entry {entry.get('_id')} with emotion {emotion}")
+                
+                data_points.append({
+                    'id': str(entry.get('_id')),
+                    'emotion': emotion,
+                    'intensity': intensity,
+                    'timestamp': timestamp,  # Use formatted timestamp
+                    'content': entry.get('content', '')
+                })
+            
+            # Generate insights if requested
+            insights = []
+            if include_insights and len(data_points) > 0:
+                # Find most common emotion
+                emotion_counts = {}
+                for point in data_points:
+                    emotion = point['emotion']
+                    emotion_counts[emotion] = emotion_counts.get(emotion, 0) + 1
+                
+                most_common = max(emotion_counts.items(), key=lambda x: x[1]) if emotion_counts else ('neutral', 0)
+                
+                insights.append({
+                    'type': 'most_common_emotion',
+                    'content': f"Your most common emotion was {most_common[0]}",
+                    'data': {'emotion': most_common[0], 'count': most_common[1]}
+                })
+                
+                # Add trend insight if we have enough data points
+                if len(data_points) >= 3:
+                    first_emotion = data_points[0]['emotion']
+                    last_emotion = data_points[-1]['emotion']
+                    
+                    positive_emotions = ['joy', 'happy', 'content', 'excited', 'calm']
+                    negative_emotions = ['sad', 'angry', 'fear', 'disgust', 'bored']
+                    
+                    trend = 'neutral'
+                    if first_emotion in negative_emotions and last_emotion in positive_emotions:
+                        trend = 'improving'
+                    elif first_emotion in positive_emotions and last_emotion in negative_emotions:
+                        trend = 'declining'
+                    elif first_emotion == last_emotion:
+                        trend = 'stable'
+                    
+                    insights.append({
+                        'type': 'emotional_trend',
+                        'content': f"Your emotional state appears to be {trend}",
+                        'data': {'trend': trend, 'first': first_emotion, 'last': last_emotion}
+                    })
+            
+            return {
+                'data': data_points,
+                'time_period': time_period,
+                'insights': insights if include_insights else None
+            }
+        except Exception as e:
+            print(f"Error in AgentService.analyze_emotional_journey: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {
+                'data': [],
+                'time_period': time_period,
+                'error': str(e)
+            }
             
         except Exception as e:
             print(f"Error in AgentService.create_action_plan: {str(e)}")

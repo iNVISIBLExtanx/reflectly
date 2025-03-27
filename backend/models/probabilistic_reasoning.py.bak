@@ -1,0 +1,734 @@
+"""
+ProbabilisticReasoning Module
+
+This module implements probabilistic reasoning capabilities using Bayesian networks
+and Markov models to model emotional transitions and intervention effectiveness.
+"""
+
+import os
+import json
+import logging
+import numpy as np
+import datetime
+from typing import Dict, List, Any, Optional, Tuple
+
+# Try to import dataset integrations
+try:
+    from .dataset.iemocap_integration import IemocapIntegration
+    IEMOCAP_AVAILABLE = True
+except ImportError:
+    IEMOCAP_AVAILABLE = False
+    
+try:
+    from .dataset.mental_health_integration import MentalHealthIntegration
+    MENTAL_HEALTH_AVAILABLE = True
+except ImportError:
+    MENTAL_HEALTH_AVAILABLE = False
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class BayesianModel:
+    """
+    Implements a simple Bayesian network for emotional reasoning.
+    """
+    
+    def __init__(self, user_email=None, models_path=None):
+        """
+        Initialize the Bayesian model.
+        
+        Args:
+            user_email: User email for personalization
+            models_path: Path to pre-trained models
+        """
+        self.user_email = user_email
+        self.models_path = models_path or os.environ.get(
+            "BAYESIAN_MODELS_PATH", 
+            "hdfs://namenode:9000/user/reflectly/models/bayesian"
+        )
+        
+        # Initialize variables
+        self.conditional_probs = {}
+        self.prior_probs = {}
+        self.loaded = False
+        
+        # Load models
+        self._load_models()
+    
+    def _load_models(self):
+        """
+        Load Bayesian models from files.
+        """
+        try:
+            # In a production environment, this would load actual models
+            # For this implementation, we use simulated data
+            logger.info(f"Loading Bayesian models from {self.models_path}")
+            
+            # Define prior probabilities for emotions
+            self.prior_probs = {
+                'joy': 0.15,
+                'sadness': 0.15,
+                'anger': 0.1,
+                'fear': 0.1,
+                'surprise': 0.05,
+                'disgust': 0.05,
+                'neutral': 0.4
+            }
+            
+            # Define conditional probabilities for interventions based on emotions
+            self.conditional_probs = {
+                'social_connection': {
+                    'joy': 0.8,
+                    'sadness': 0.7,
+                    'anger': 0.3,
+                    'fear': 0.5,
+                    'surprise': 0.6,
+                    'disgust': 0.2,
+                    'neutral': 0.5
+                },
+                'physical_activity': {
+                    'joy': 0.7,
+                    'sadness': 0.6,
+                    'anger': 0.8,
+                    'fear': 0.6,
+                    'surprise': 0.5,
+                    'disgust': 0.4,
+                    'neutral': 0.6
+                },
+                'mindfulness': {
+                    'joy': 0.6,
+                    'sadness': 0.5,
+                    'anger': 0.6,
+                    'fear': 0.7,
+                    'surprise': 0.4,
+                    'disgust': 0.5,
+                    'neutral': 0.7
+                },
+                'creative_expression': {
+                    'joy': 0.7,
+                    'sadness': 0.6,
+                    'anger': 0.5,
+                    'fear': 0.4,
+                    'surprise': 0.7,
+                    'disgust': 0.3,
+                    'neutral': 0.5
+                },
+                'cognitive_reframing': {
+                    'joy': 0.5,
+                    'sadness': 0.7,
+                    'anger': 0.6,
+                    'fear': 0.8,
+                    'surprise': 0.4,
+                    'disgust': 0.6,
+                    'neutral': 0.5
+                }
+            }
+            
+            # If IEMOCAP data is available, enhance with dataset-derived probabilities
+            if IEMOCAP_AVAILABLE:
+                try:
+                    iemocap = IemocapIntegration()
+                    if iemocap.loaded:
+                        # Update transition probabilities from IEMOCAP dataset
+                        logger.info("Enhancing Bayesian model with IEMOCAP data")
+                        # This is where we would integrate IEMOCAP data in a production environment
+                except Exception as e:
+                    logger.warning(f"Failed to enhance Bayesian model with IEMOCAP data: {e}")
+            
+            # If Mental Health data is available, enhance with dataset-derived probabilities
+            if MENTAL_HEALTH_AVAILABLE:
+                try:
+                    mental_health = MentalHealthIntegration()
+                    if mental_health.loaded:
+                        # Update intervention effectiveness from Mental Health dataset
+                        logger.info("Enhancing Bayesian model with Mental Health Conversations data")
+                        # This is where we would integrate Mental Health data in a production environment
+                except Exception as e:
+                    logger.warning(f"Failed to enhance Bayesian model with Mental Health data: {e}")
+                    
+            self.loaded = True
+            logger.info("Bayesian models loaded successfully")
+            
+        except Exception as e:
+            logger.error(f"Error loading Bayesian models: {e}")
+            self.loaded = False
+    
+    def predict_intervention_effectiveness(self, emotion: str, intervention: str) -> float:
+        """
+        Predict the effectiveness of an intervention given an emotional state.
+        
+        Args:
+            emotion: Current emotional state
+            intervention: Proposed intervention
+            
+        Returns:
+            Probability of effectiveness (0-1)
+        """
+        if not self.loaded:
+            logger.warning("Bayesian models not loaded, returning default probability")
+            return 0.5
+        
+        # Normalize emotion and intervention
+        emotion = emotion.lower()
+        intervention = intervention.lower()
+        
+        # Map intervention to known interventions
+        intervention_mapping = {
+            'social': 'social_connection',
+            'social_connection': 'social_connection',
+            'connect': 'social_connection',
+            'talk': 'social_connection',
+            
+            'exercise': 'physical_activity',
+            'physical': 'physical_activity',
+            'physical_activity': 'physical_activity',
+            'active': 'physical_activity',
+            'workout': 'physical_activity',
+            
+            'mindfulness': 'mindfulness',
+            'meditate': 'mindfulness',
+            'meditation': 'mindfulness',
+            'breathe': 'mindfulness',
+            'breathing': 'mindfulness',
+            
+            'creative': 'creative_expression',
+            'create': 'creative_expression',
+            'art': 'creative_expression',
+            'creative_expression': 'creative_expression',
+            'write': 'creative_expression',
+            
+            'cognitive': 'cognitive_reframing',
+            'reframe': 'cognitive_reframing',
+            'cognitive_reframing': 'cognitive_reframing',
+            'think': 'cognitive_reframing',
+            'perspective': 'cognitive_reframing'
+        }
+        
+        # Map intervention to known category
+        intervention_category = intervention_mapping.get(intervention, None)
+        
+        # If intervention not recognized, return default probability
+        if not intervention_category or intervention_category not in self.conditional_probs:
+            return 0.5
+        
+        # Map emotion to known emotions
+        emotion_mapping = {
+            'happy': 'joy',
+            'joy': 'joy',
+            'excited': 'joy',
+            
+            'sad': 'sadness',
+            'sadness': 'sadness',
+            'depressed': 'sadness',
+            
+            'angry': 'anger',
+            'anger': 'anger',
+            'frustrated': 'anger',
+            
+            'afraid': 'fear',
+            'fear': 'fear',
+            'anxious': 'fear',
+            'scared': 'fear',
+            
+            'surprised': 'surprise',
+            'surprise': 'surprise',
+            'shocked': 'surprise',
+            
+            'disgusted': 'disgust',
+            'disgust': 'disgust',
+            'repulsed': 'disgust',
+            
+            'neutral': 'neutral',
+            'calm': 'neutral',
+            'balanced': 'neutral'
+        }
+        
+        # Map emotion to known category
+        emotion_category = emotion_mapping.get(emotion, 'neutral')
+        
+        # Get conditional probability
+        return self.conditional_probs[intervention_category].get(emotion_category, 0.5)
+    
+    def rank_interventions(self, emotion: str, interventions: List[str] = None) -> List[Dict[str, Any]]:
+        """
+        Rank interventions by effectiveness for a given emotion.
+        
+        Args:
+            emotion: Current emotional state
+            interventions: List of interventions to rank (optional, uses all if None)
+            
+        Returns:
+            List of interventions with effectiveness scores, sorted by effectiveness
+        """
+        if not self.loaded:
+            logger.warning("Bayesian models not loaded, returning default ranking")
+            return [{'intervention': 'mindfulness', 'effectiveness': 0.5}]
+        
+        # If no interventions provided, use all known interventions
+        if not interventions:
+            interventions = list(self.conditional_probs.keys())
+        
+        # Calculate effectiveness for each intervention
+        ranked_interventions = []
+        for intervention in interventions:
+            effectiveness = self.predict_intervention_effectiveness(emotion, intervention)
+            intervention_name = intervention.replace('_', ' ').title()
+            ranked_interventions.append({
+                'intervention': intervention_name,
+                'effectiveness': effectiveness
+            })
+        
+        # Sort by effectiveness (descending)
+        ranked_interventions.sort(key=lambda x: x['effectiveness'], reverse=True)
+        
+        return ranked_interventions
+
+
+class MarkovModel:
+    """
+    Implements a Markov model for predicting emotional state transitions.
+    """
+    
+    def __init__(self, user_email=None, models_path=None):
+        """
+        Initialize the Markov model.
+        
+        Args:
+            user_email: User email for personalization
+            models_path: Path to pre-trained models
+        """
+        self.user_email = user_email
+        self.models_path = models_path or os.environ.get(
+            "MARKOV_MODELS_PATH", 
+            "hdfs://namenode:9000/user/reflectly/models/markov"
+        )
+        
+        # Initialize variables
+        self.transition_matrix = {}
+        self.loaded = False
+        
+        # Load models
+        self._load_models()
+    
+    def _load_models(self):
+        """
+        Load Markov models from files.
+        """
+        try:
+            # In a production environment, this would load actual models
+            # For this implementation, we use simulated data
+            logger.info(f"Loading Markov models from {self.models_path}")
+            
+            # Define transition probabilities between emotions
+            # These probabilities represent the likelihood of transitioning from one emotion to another
+            self.transition_matrix = {
+                'joy': {'joy': 0.6, 'sadness': 0.05, 'anger': 0.05, 'fear': 0.05, 'surprise': 0.15, 'disgust': 0.02, 'neutral': 0.08},
+                'sadness': {'joy': 0.1, 'sadness': 0.5, 'anger': 0.1, 'fear': 0.1, 'surprise': 0.05, 'disgust': 0.05, 'neutral': 0.1},
+                'anger': {'joy': 0.05, 'sadness': 0.15, 'anger': 0.5, 'fear': 0.1, 'surprise': 0.05, 'disgust': 0.1, 'neutral': 0.05},
+                'fear': {'joy': 0.05, 'sadness': 0.1, 'anger': 0.1, 'fear': 0.5, 'surprise': 0.15, 'disgust': 0.05, 'neutral': 0.05},
+                'surprise': {'joy': 0.3, 'sadness': 0.05, 'anger': 0.05, 'fear': 0.1, 'surprise': 0.3, 'disgust': 0.05, 'neutral': 0.15},
+                'disgust': {'joy': 0.05, 'sadness': 0.1, 'anger': 0.2, 'fear': 0.1, 'surprise': 0.05, 'disgust': 0.4, 'neutral': 0.1},
+                'neutral': {'joy': 0.15, 'sadness': 0.15, 'anger': 0.1, 'fear': 0.1, 'surprise': 0.15, 'disgust': 0.05, 'neutral': 0.3}
+            }
+            
+            # If IEMOCAP data is available, enhance with dataset-derived probabilities
+            if IEMOCAP_AVAILABLE:
+                try:
+                    iemocap = IemocapIntegration()
+                    if iemocap.loaded:
+                        # Update transition probabilities from IEMOCAP dataset
+                        logger.info("Enhancing Markov model with IEMOCAP data")
+                        
+                        # For each emotion pair, update the transition probability with IEMOCAP data
+                        for from_emotion in self.transition_matrix:
+                            for to_emotion in self.transition_matrix[from_emotion]:
+                                # Get transition probability from IEMOCAP
+                                prob = iemocap.get_transition_probability(from_emotion, to_emotion)
+                                
+                                # Blend with existing probability (weighted average)
+                                current_prob = self.transition_matrix[from_emotion][to_emotion]
+                                self.transition_matrix[from_emotion][to_emotion] = 0.7 * prob + 0.3 * current_prob
+                except Exception as e:
+                    logger.warning(f"Failed to enhance Markov model with IEMOCAP data: {e}")
+            
+            self.loaded = True
+            logger.info("Markov models loaded successfully")
+            
+        except Exception as e:
+            logger.error(f"Error loading Markov models: {e}")
+            self.loaded = False
+    
+    def predict_next_emotion(self, current_emotion: str) -> str:
+        """
+        Predict the next emotional state given the current state.
+        
+        Args:
+            current_emotion: Current emotional state
+            
+        Returns:
+            Predicted next emotional state
+        """
+        if not self.loaded:
+            logger.warning("Markov models not loaded, returning default prediction")
+            return current_emotion
+        
+        # Normalize emotion name
+        current_emotion = current_emotion.lower()
+        
+        # Map to known emotions
+        emotion_mapping = {
+            'happy': 'joy',
+            'joy': 'joy',
+            'excited': 'joy',
+            
+            'sad': 'sadness',
+            'sadness': 'sadness',
+            'depressed': 'sadness',
+            
+            'angry': 'anger',
+            'anger': 'anger',
+            'frustrated': 'anger',
+            
+            'afraid': 'fear',
+            'fear': 'fear',
+            'anxious': 'fear',
+            'scared': 'fear',
+            
+            'surprised': 'surprise',
+            'surprise': 'surprise',
+            'shocked': 'surprise',
+            
+            'disgusted': 'disgust',
+            'disgust': 'disgust',
+            'repulsed': 'disgust',
+            
+            'neutral': 'neutral',
+            'calm': 'neutral',
+            'balanced': 'neutral'
+        }
+        
+        # Map to known emotion
+        from_emotion = emotion_mapping.get(current_emotion, 'neutral')
+        
+        # Check if we have transition probabilities for this emotion
+        if from_emotion not in self.transition_matrix:
+            logger.warning(f"No transition probabilities for emotion {from_emotion}, using default")
+            return current_emotion
+        
+        # Get transition probabilities
+        transitions = self.transition_matrix[from_emotion]
+        
+        # Predict next emotion using weighted random choice
+        emotions = list(transitions.keys())
+        probabilities = list(transitions.values())
+        
+        # Ensure probabilities sum to 1
+        total_prob = sum(probabilities)
+        if total_prob != 1.0:
+            probabilities = [p/total_prob for p in probabilities]
+        
+        # Select next emotion using weighted random choice
+        selected_emotion = np.random.choice(emotions, p=probabilities)
+        
+        return selected_emotion
+    
+    def predict_sequence(self, start_emotion: str, sequence_length: int = 5) -> List[str]:
+        """
+        Predict a sequence of emotional states starting from the given state.
+        
+        Args:
+            start_emotion: Starting emotional state
+            sequence_length: Length of the sequence to predict
+            
+        Returns:
+            List of predicted emotional states
+        """
+        if not self.loaded:
+            logger.warning("Markov models not loaded, returning default sequence")
+            return [start_emotion] * sequence_length
+        
+        # Initialize sequence with start emotion
+        sequence = [start_emotion]
+        current_emotion = start_emotion
+        
+        # Predict next emotions
+        for _ in range(sequence_length - 1):
+            next_emotion = self.predict_next_emotion(current_emotion)
+            sequence.append(next_emotion)
+            current_emotion = next_emotion
+        
+        return sequence
+    
+    def update_with_history(self, emotion_history: List[Dict[str, Any]]):
+        """
+        Update the Markov model with user's emotional history.
+        
+        Args:
+            emotion_history: List of emotional states with timestamps
+        """
+        if not self.loaded or not emotion_history or len(emotion_history) < 2:
+            logger.warning("Cannot update Markov model: model not loaded or insufficient history")
+            return
+        
+        # Sort history by timestamp
+        sorted_history = sorted(emotion_history, key=lambda x: x.get('timestamp', datetime.datetime.min))
+        
+        # Count transitions in history
+        transition_counts = {}
+        
+        for i in range(len(sorted_history) - 1):
+            from_emotion = sorted_history[i].get('primary_emotion', 'neutral').lower()
+            to_emotion = sorted_history[i+1].get('primary_emotion', 'neutral').lower()
+            
+            # Map to known emotions
+            emotion_mapping = {
+                'happy': 'joy',
+                'joy': 'joy',
+                'excited': 'joy',
+                
+                'sad': 'sadness',
+                'sadness': 'sadness',
+                'depressed': 'sadness',
+                
+                'angry': 'anger',
+                'anger': 'anger',
+                'frustrated': 'anger',
+                
+                'afraid': 'fear',
+                'fear': 'fear',
+                'anxious': 'fear',
+                'scared': 'fear',
+                
+                'surprised': 'surprise',
+                'surprise': 'surprise',
+                'shocked': 'surprise',
+                
+                'disgusted': 'disgust',
+                'disgust': 'disgust',
+                'repulsed': 'disgust',
+                
+                'neutral': 'neutral',
+                'calm': 'neutral',
+                'balanced': 'neutral'
+            }
+            
+            from_emotion = emotion_mapping.get(from_emotion, 'neutral')
+            to_emotion = emotion_mapping.get(to_emotion, 'neutral')
+            
+            if from_emotion not in transition_counts:
+                transition_counts[from_emotion] = {}
+            
+            if to_emotion not in transition_counts[from_emotion]:
+                transition_counts[from_emotion][to_emotion] = 0
+            
+            transition_counts[from_emotion][to_emotion] += 1
+        
+        # Update transition matrix with counts (using Bayesian update)
+        for from_emotion in transition_counts:
+            if from_emotion not in self.transition_matrix:
+                self.transition_matrix[from_emotion] = {
+                    'joy': 0.14,
+                    'sadness': 0.14,
+                    'anger': 0.14,
+                    'fear': 0.14,
+                    'surprise': 0.14,
+                    'disgust': 0.14,
+                    'neutral': 0.16
+                }
+            
+            # Calculate total transitions from this emotion
+            total = sum(transition_counts[from_emotion].values())
+            
+            # Update probabilities
+            for to_emotion, count in transition_counts[from_emotion].items():
+                # Calculate observed probability
+                observed_prob = count / total
+                
+                # Update using weighted average (give more weight to user's history)
+                if to_emotion in self.transition_matrix[from_emotion]:
+                    current_prob = self.transition_matrix[from_emotion][to_emotion]
+                    self.transition_matrix[from_emotion][to_emotion] = 0.7 * observed_prob + 0.3 * current_prob
+                else:
+                    self.transition_matrix[from_emotion][to_emotion] = observed_prob
+            
+            # Normalize probabilities to ensure they sum to 1
+            total_prob = sum(self.transition_matrix[from_emotion].values())
+            for to_emotion in self.transition_matrix[from_emotion]:
+                self.transition_matrix[from_emotion][to_emotion] /= total_prob
+
+
+class ProbabilisticReasoning:
+    """
+    Main class for probabilistic reasoning, combining Bayesian and Markov models.
+    """
+    
+    def __init__(self, user_email=None, models_path=None):
+        """
+        Initialize ProbabilisticReasoning.
+        
+        Args:
+            user_email: User email for personalization
+            models_path: Path to pre-trained models
+        """
+        self.user_email = user_email
+        self.models_path = models_path
+        
+        # Initialize Bayesian and Markov models
+        self.bayesian_model = BayesianModel(user_email, models_path)
+        self.markov_model = MarkovModel(user_email, models_path)
+        
+        # Integration with datasets
+        self.using_iemocap = IEMOCAP_AVAILABLE
+        self.using_mental_health = MENTAL_HEALTH_AVAILABLE
+        
+        if self.using_iemocap:
+            try:
+                self.iemocap = IemocapIntegration()
+            except Exception as e:
+                logger.warning(f"Failed to initialize IEMOCAP integration: {e}")
+                self.using_iemocap = False
+        
+        if self.using_mental_health:
+            try:
+                self.mental_health = MentalHealthIntegration()
+            except Exception as e:
+                logger.warning(f"Failed to initialize Mental Health integration: {e}")
+                self.using_mental_health = False
+    
+    def predict_intervention_effectiveness(self, emotion: str, intervention: str) -> float:
+        """
+        Predict the effectiveness of an intervention for a given emotion.
+        
+        Args:
+            emotion: Current emotional state
+            intervention: Proposed intervention
+            
+        Returns:
+            Probability of effectiveness (0-1)
+        """
+        # Check Mental Health dataset first (it has more direct intervention data)
+        if self.using_mental_health and self.mental_health.loaded:
+            try:
+                # Get interventions from Mental Health dataset
+                interventions = self.mental_health.get_effective_interventions(emotion, limit=5)
+                
+                # Find matching intervention
+                for item in interventions:
+                    if intervention.lower() in item['intervention'].lower():
+                        return item['effectiveness']
+            except Exception as e:
+                logger.warning(f"Error getting intervention data from Mental Health: {e}")
+        
+        # Fall back to Bayesian model
+        return self.bayesian_model.predict_intervention_effectiveness(emotion, intervention)
+    
+    def predict_next_emotion(self, current_emotion: str) -> str:
+        """
+        Predict the next emotional state.
+        
+        Args:
+            current_emotion: Current emotional state
+            
+        Returns:
+            Predicted next emotional state
+        """
+        return self.markov_model.predict_next_emotion(current_emotion)
+    
+    def predict_emotional_sequence(self, start_emotion: str, sequence_length: int = 5) -> List[str]:
+        """
+        Predict a sequence of emotional states.
+        
+        Args:
+            start_emotion: Starting emotional state
+            sequence_length: Length of the sequence to predict
+            
+        Returns:
+            List of predicted emotional states
+        """
+        return self.markov_model.predict_sequence(start_emotion, sequence_length)
+    
+    def rank_interventions(self, emotion: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """
+        Rank interventions by effectiveness for a given emotion.
+        
+        Args:
+            emotion: Current emotional state
+            limit: Maximum number of interventions to return
+            
+        Returns:
+            List of interventions with effectiveness scores
+        """
+        # Check Mental Health dataset first (it has more direct intervention data)
+        if self.using_mental_health and self.mental_health.loaded:
+            try:
+                # Get interventions from Mental Health dataset
+                return self.mental_health.get_effective_interventions(emotion, limit=limit)
+            except Exception as e:
+                logger.warning(f"Error getting interventions from Mental Health: {e}")
+        
+        # Fall back to Bayesian model
+        return self.bayesian_model.rank_interventions(emotion)[:limit]
+    
+    def update_with_emotion_history(self, emotion_history: List[Dict[str, Any]]):
+        """
+        Update models with user's emotional history.
+        
+        Args:
+            emotion_history: List of emotional states with timestamps
+        """
+        if emotion_history and len(emotion_history) >= 2:
+            self.markov_model.update_with_history(emotion_history)
+    
+    def get_emotion_coordinates(self, emotion: str) -> Dict[str, float]:
+        """
+        Get coordinates for an emotion in 2D space.
+        
+        Args:
+            emotion: Emotion to get coordinates for
+            
+        Returns:
+            Dictionary with x and y coordinates
+        """
+        if self.using_iemocap and self.iemocap.loaded:
+            try:
+                return self.iemocap.get_emotion_coordinates(emotion)
+            except Exception as e:
+                logger.warning(f"Error getting emotion coordinates from IEMOCAP: {e}")
+        
+        # Fallback coordinates (valence-arousal space)
+        coordinates = {
+            'joy': {'x': 0.8, 'y': 0.6},
+            'sadness': {'x': -0.7, 'y': -0.4},
+            'anger': {'x': -0.6, 'y': 0.8},
+            'fear': {'x': -0.8, 'y': 0.6},
+            'surprise': {'x': 0.3, 'y': 0.8},
+            'disgust': {'x': -0.7, 'y': 0.2},
+            'neutral': {'x': 0.0, 'y': 0.0}
+        }
+        
+        # Normalize emotion name
+        emotion = emotion.lower()
+        
+        # Map to known emotions
+        emotion_mapping = {
+            'happy': 'joy',
+            'excited': 'joy',
+            'sad': 'sadness',
+            'depressed': 'sadness',
+            'angry': 'anger',
+            'frustrated': 'anger',
+            'afraid': 'fear',
+            'anxious': 'fear',
+            'scared': 'fear',
+            'surprised': 'surprise',
+            'shocked': 'surprise',
+            'disgusted': 'disgust',
+            'repulsed': 'disgust',
+            'calm': 'neutral',
+            'balanced': 'neutral'
+        }
+        
+        base_emotion = emotion_mapping.get(emotion, emotion)
+        
+        return coordinates.get(base_emotion, {'x': 0.0, 'y': 0.0})

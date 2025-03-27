@@ -1,6 +1,12 @@
 import datetime
+import logging
 from pymongo import MongoClient
 from bson.objectid import ObjectId
+from models.dataset.iemocap_integration import IemocapIntegration
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class EmotionalGraph:
     """
@@ -10,7 +16,8 @@ class EmotionalGraph:
     
     def __init__(self, db):
         """
-        Initialize the EmotionalGraph with a database connection.
+        Initialize the EmotionalGraph with a database connection and IEMOCAP dataset integration.
+        The IEMOCAP dataset provides data-driven transition probabilities between emotional states.
         
         Args:
             db: MongoDB database connection
@@ -18,6 +25,15 @@ class EmotionalGraph:
         self.db = db
         self.emotions_collection = db.emotional_states
         self.transitions_collection = db.emotional_transitions
+        
+        # Initialize the IEMOCAP integration for data-driven transition probabilities
+        try:
+            self.iemocap = IemocapIntegration()
+            self.using_dataset_transitions = True
+            logger.info("IEMOCAP dataset integration initialized successfully")
+        except Exception as e:
+            logger.warning(f"Failed to initialize IEMOCAP integration: {e}. Using default transitions.")
+            self.using_dataset_transitions = False
         
         # Define positive and negative emotions
         self.positive_emotions = ['joy', 'surprise', 'happy', 'excited', 'content', 'calm']
@@ -27,9 +43,41 @@ class EmotionalGraph:
         # Define stress-related emotions for special handling
         self.stress_emotions = ['stressed', 'anxious', 'overwhelmed', 'worried']
         
+        # Map standard emotions to IEMOCAP emotions for compatibility
+        self.emotion_mapping = {
+            # Map our standard emotions to IEMOCAP emotion categories
+            'joy': 'happy',
+            'happy': 'happy',
+            'excited': 'happy',
+            'content': 'happy',
+            'calm': 'neutral',
+            'sadness': 'sad',
+            'sad': 'sad',
+            'anger': 'angry',
+            'angry': 'angry',
+            'frustration': 'angry',
+            'frustrated': 'angry',
+            'fear': 'fear',
+            'afraid': 'fear',
+            'scared': 'fear',
+            'anxiety': 'anxious',
+            'anxious': 'anxious',
+            'worried': 'anxious',
+            'disgust': 'disgust',
+            'surprise': 'surprise',
+            'neutral': 'neutral',
+            'stressed': 'anxious',
+            'overwhelmed': 'anxious'
+        }
+        
+        # Cache for transition probabilities to avoid repeated computation
+        self.transition_probability_cache = {}
+        
     def record_emotion(self, user_email, emotion_data, entry_id=None):
         """
-        Record an emotional state for a user.
+        Record an emotional state for a user and update transition probabilities.
+        Uses IEMOCAP data-driven insights to predict potential next emotions and
+        identify unusual transitions.
         
         Args:
             user_email (str): The user's email
@@ -37,35 +85,124 @@ class EmotionalGraph:
             entry_id (str, optional): Associated journal entry ID
             
         Returns:
-            str: ID of the recorded emotional state
+            dict: Dictionary containing the recorded emotional state ID and additional insights
         """
-        # Create emotional state document
+        # Extract primary emotion
+        primary_emotion = emotion_data.get('primary_emotion', 'neutral')
+        current_timestamp = datetime.datetime.now()
+        
+        # Create emotional state document with enhanced fields
         emotion_state = {
             'user_email': user_email,
-            'primary_emotion': emotion_data.get('primary_emotion', 'neutral'),
+            'primary_emotion': primary_emotion,
             'is_positive': emotion_data.get('is_positive', False),
             'emotion_scores': emotion_data.get('emotion_scores', {}),
+            'secondary_emotion': emotion_data.get('secondary_emotion'),
+            'intensity': emotion_data.get('intensity', 3),
+            'context_factors': emotion_data.get('context_factors', []),
             'entry_id': entry_id,
-            'timestamp': datetime.datetime.now()
+            'timestamp': current_timestamp
         }
+        
+        # Get insights about this emotion from IEMOCAP if available
+        if self.using_dataset_transitions and primary_emotion:
+            try:
+                # Map to IEMOCAP emotion category if needed
+                mapped_emotion = self.emotion_mapping.get(primary_emotion, primary_emotion)
+                # Get emotion triggers from IEMOCAP dataset
+                triggers = self.iemocap.get_emotion_triggers(mapped_emotion)
+                if triggers:
+                    emotion_state['potential_triggers'] = triggers
+                    logger.info(f"Added {len(triggers)} potential triggers for {primary_emotion} from IEMOCAP dataset")
+            except Exception as e:
+                logger.warning(f"Error getting emotion triggers from IEMOCAP: {e}")
         
         # Insert into database
         result = self.emotions_collection.insert_one(emotion_state)
         emotion_state_id = result.inserted_id
         
+        # Prepare response with insights
+        response = {
+            'emotion_state_id': str(emotion_state_id),
+            'insights': {}
+        }
+        
         # Get previous emotional state to create transition
         previous_state = self._get_previous_emotional_state(user_email)
         
+        # If there's a previous state, record the transition and analyze it
         if previous_state:
-            self._record_transition(
-                user_email, 
-                previous_state['primary_emotion'],
-                emotion_data.get('primary_emotion', 'neutral'),
-                previous_state['_id'],
-                emotion_state_id
-            )
+            from_emotion = previous_state['primary_emotion']
+            to_emotion = primary_emotion
+            from_state_id = previous_state['_id']
+            to_state_id = emotion_state_id
+            
+            # Record the transition in our database
+            transition_id = self._record_transition(user_email, from_emotion, to_emotion, from_state_id, to_state_id)
+            
+            # Analyze this transition using the IEMOCAP dataset if available
+            if self.using_dataset_transitions:
+                try:
+                    # Map our emotions to IEMOCAP categories if needed
+                    mapped_from = self.emotion_mapping.get(from_emotion, from_emotion)
+                    mapped_to = self.emotion_mapping.get(to_emotion, to_emotion)
+                    
+                    # Get the transition probability from IEMOCAP
+                    dataset_prob = self.iemocap.get_transition_probability(mapped_from, mapped_to)
+                    
+                    # Determine if this is an unusual transition
+                    is_unusual = dataset_prob < 0.1  # Less than 10% probability
+                    
+                    # Add transition analysis to response
+                    response['insights']['transition_analysis'] = {
+                        'from_emotion': from_emotion,
+                        'to_emotion': to_emotion,
+                        'dataset_probability': dataset_prob,
+                        'is_unusual_transition': is_unusual
+                    }
+                    
+                    # Update transition with probability from dataset
+                    self.transitions_collection.update_one(
+                        {'_id': ObjectId(transition_id)},
+                        {'$set': {'probability': dataset_prob, 'is_unusual': is_unusual}}
+                    )
+                    logger.info(f"Updated transition {from_emotion} -> {to_emotion} with probability {dataset_prob}")
+                    
+                except Exception as e:
+                    logger.warning(f"Error analyzing transition with IEMOCAP: {e}")
         
-        return str(emotion_state_id)
+        # Predict potential next emotions using our transition model
+        try:
+            # Get transition probabilities for this user (blended model)
+            transition_probs = self.get_transition_probabilities(user_email)
+            
+            # If we have probabilities for the current emotion, predict next emotions
+            if primary_emotion in transition_probs:
+                # Sort next emotions by probability
+                next_emotions = sorted(
+                    [(emotion, prob) for emotion, prob in transition_probs[primary_emotion].items()],
+                    key=lambda x: x[1],
+                    reverse=True
+                )
+                
+                # Take top 3 most likely next emotions
+                top_next_emotions = next_emotions[:3]
+                
+                # Add to response
+                response['insights']['likely_next_emotions'] = [
+                    {'emotion': emotion, 'probability': prob}
+                    for emotion, prob in top_next_emotions
+                ]
+                logger.info(f"Predicted {len(top_next_emotions)} likely next emotions from {primary_emotion}")
+        except Exception as e:
+            logger.warning(f"Error predicting next emotions: {e}")
+        
+        # Clear transition probability cache for this user to ensure fresh data next time
+        cache_key = f"{user_email}_transitions"
+        if cache_key in self.transition_probability_cache:
+            del self.transition_probability_cache[cache_key]
+        
+        return response
     
     def _get_previous_emotional_state(self, user_email):
         """
@@ -433,51 +570,90 @@ class EmotionalGraph:
         else:
             return None
             
-    def get_graph(self):
+    def get_graph(self, user_email=None):
         """
         Get the emotional graph structure as a dictionary suitable for A* search.
+        The graph is weighted by the transition costs derived from the IEMOCAP dataset
+        and user history, if available.
         
+        Args:
+            user_email (str, optional): The user's email for personalized graph
+            
         Returns:
             dict: A dictionary where keys are emotion names and values are dictionaries
                   mapping to connected emotions with their transition costs.
         """
-        # Get all unique emotions from the database
+        # Get all unique emotions from our defined emotions
         all_emotions = set(self.positive_emotions + self.negative_emotions + self.neutral_emotions)
         
         # Initialize the graph structure
         graph = {emotion: {} for emotion in all_emotions}
         
-        # Populate the graph with transitions from the database
-        # Aggregate transitions to get counts and calculate probabilities
-        pipeline = [
-            {"$group": {
-                "_id": {"from": "$from_emotion", "to": "$to_emotion"},
-                "count": {"$sum": 1}
-            }}
-        ]
-        
-        transition_counts = list(self.transitions_collection.aggregate(pipeline))
-        
-        # Calculate transition costs (inverse of frequency)
-        for transition in transition_counts:
-            from_emotion = transition["_id"]["from"]
-            to_emotion = transition["_id"]["to"]
-            count = transition["count"]
+        # If we have a user email, get personalized transition probabilities
+        if user_email:
+            logger.info(f"Building personalized emotional graph for user: {user_email}")
+            # Get transition probabilities for this user (dataset + user history blend)
+            transition_probs = self.get_transition_probabilities(user_email)
+        elif self.using_dataset_transitions:
+            logger.info("Building dataset-derived emotional graph (no user personalization)")
+            # Use only dataset-derived transition probabilities
+            transition_probs = self._get_dataset_transition_probabilities()
+        else:
+            logger.info("Building default emotional graph (no dataset or user data)")
+            # Fall back to database transitions
+            transition_probs = {}
             
-            # Higher count means lower cost (1/count)
-            # Add a small constant to avoid division by zero
-            cost = 1.0 / (count + 0.1)
+            # Populate transition_probs with data from the database
+            pipeline = [
+                {"$group": {
+                    "_id": {"from": "$from_emotion", "to": "$to_emotion"},
+                    "count": {"$sum": 1}
+                }}
+            ]
             
-            if from_emotion in graph and to_emotion in all_emotions:
-                graph[from_emotion][to_emotion] = cost
+            transition_counts = list(self.transitions_collection.aggregate(pipeline))
+            
+            for transition in transition_counts:
+                from_emotion = transition["_id"]["from"]
+                to_emotion = transition["_id"]["to"]
+                count = transition["count"]
+                
+                if from_emotion not in transition_probs:
+                    transition_probs[from_emotion] = {}
+                
+                # Calculate probability from count
+                total_from = sum(t["count"] for t in transition_counts 
+                               if t["_id"]["from"] == from_emotion)
+                probability = count / total_from if total_from > 0 else 0.0
+                
+                transition_probs[from_emotion][to_emotion] = probability
+        
+        # Convert transition probabilities to costs for A* search
+        # For each emotion pair, cost = -log(probability) to make higher probabilities = lower costs
+        import math
+        for from_emotion, to_emotions in transition_probs.items():
+            if from_emotion in graph:
+                for to_emotion, probability in to_emotions.items():
+                    if to_emotion in all_emotions:
+                        # Avoid log(0) and ensure a minimum cost
+                        p = max(probability, 0.01)
+                        # Higher probability means lower cost
+                        graph[from_emotion][to_emotion] = -math.log(p)
         
         # Ensure all emotions have at least some connections
-        # If an emotion has no outgoing transitions, add connections to all emotions with high cost
         for emotion in all_emotions:
             if not graph[emotion]:
+                logger.warning(f"No transitions found for emotion: {emotion}. Adding default connections.")
                 for other in all_emotions:
                     if other != emotion:
-                        graph[emotion][other] = 10.0  # High cost for rarely observed transitions
+                        # High cost for rarely observed transitions
+                        graph[emotion][other] = 10.0
+            else:
+                # Ensure connections to all emotions
+                for other in all_emotions:
+                    if other != emotion and other not in graph[emotion]:
+                        # Add with high cost, but lower than default for no transitions
+                        graph[emotion][other] = 8.0
         
         return graph
         
@@ -519,6 +695,7 @@ class EmotionalGraph:
     def get_transition_probabilities(self, user_email):
         """
         Get transition probabilities between emotional states for a user.
+        Combines IEMOCAP dataset-derived probabilities with user-specific transition history.
         
         Args:
             user_email (str): The user's email
@@ -526,30 +703,137 @@ class EmotionalGraph:
         Returns:
             dict: Dictionary mapping from_emotion to a dictionary mapping to_emotion to probability
         """
-        # Get all transitions for this user
-        transitions = list(self.transitions_collection.find({
+        # Check if we've cached this result recently to avoid repeated computation
+        cache_key = f"{user_email}_transitions"
+        if cache_key in self.transition_probability_cache:
+            return self.transition_probability_cache[cache_key]
+        
+        # Initialize with dataset-derived transition probabilities if available
+        if self.using_dataset_transitions:
+            # Start with the IEMOCAP dataset model as our baseline
+            transition_probs = self._get_dataset_transition_probabilities()
+            logger.info("Using IEMOCAP dataset-derived transition probabilities as baseline")
+        else:
+            # Initialize with empty transition probabilities if dataset integration not available
+            transition_probs = {}
+            logger.info("Using default transition probabilities (no dataset integration)")
+        
+        # Get user-specific transitions to blend with the dataset model
+        user_transitions = list(self.transitions_collection.find({
             'user_email': user_email
         }))
         
-        # If no user-specific transitions, get default transitions
-        if not transitions:
-            transitions = list(self.transitions_collection.find({
+        # If we have user-specific transitions, blend them with the dataset model
+        if user_transitions:
+            self._blend_user_transitions(transition_probs, user_transitions)
+            logger.info(f"Blended {len(user_transitions)} user-specific transitions with dataset model")
+        
+        # If we still have no transitions at all (no dataset and no user history),
+        # fall back to default transitions
+        if not transition_probs:
+            default_transitions = list(self.transitions_collection.find({
                 'user_email': 'default'
             }))
+            
+            for transition in default_transitions:
+                from_emotion = transition.get('from_emotion')
+                to_emotion = transition.get('to_emotion')
+                probability = transition.get('probability', 0.5)  # Default to 0.5 if not specified
+                
+                if from_emotion not in transition_probs:
+                    transition_probs[from_emotion] = {}
+                
+                transition_probs[from_emotion][to_emotion] = probability
+            
+            logger.info(f"Using {len(default_transitions)} default transitions (no dataset or user history)")
         
-        # Create transition probability dictionary
+        # Cache the result to avoid repeated computation
+        self.transition_probability_cache[cache_key] = transition_probs
+        
+        return transition_probs
+    
+    def _get_dataset_transition_probabilities(self):
+        """
+        Get transition probabilities derived from the IEMOCAP dataset.
+        
+        Returns:
+            dict: Dictionary mapping from_emotion to a dictionary mapping to_emotion to probability
+        """
+        # Initialize transition probabilities dictionary
         transition_probs = {}
-        for transition in transitions:
+        
+        # Get all unique emotions from our standard emotions
+        all_emotions = set(self.positive_emotions + self.negative_emotions + self.neutral_emotions)
+        
+        # For each emotion pair, get the transition probability from the IEMOCAP dataset
+        for from_emotion in all_emotions:
+            # Map our emotion to IEMOCAP emotion category
+            mapped_from = self.emotion_mapping.get(from_emotion, from_emotion)
+            
+            transition_probs[from_emotion] = {}
+            
+            for to_emotion in all_emotions:
+                # Map our emotion to IEMOCAP emotion category
+                mapped_to = self.emotion_mapping.get(to_emotion, to_emotion)
+                
+                # Get the transition probability from the IEMOCAP dataset
+                probability = self.iemocap.get_transition_probability(mapped_from, mapped_to)
+                
+                # Store the probability in our transition probabilities dictionary
+                transition_probs[from_emotion][to_emotion] = probability
+        
+        return transition_probs
+    
+    def _blend_user_transitions(self, transition_probs, user_transitions):
+        """
+        Blend user-specific transitions with dataset-derived transitions.
+        This gives more weight to the user's actual emotional patterns while still
+        leveraging the broader patterns from the dataset.
+        
+        Args:
+            transition_probs (dict): Dictionary of transition probabilities to update
+            user_transitions (list): List of user-specific transition documents
+        """
+        # Count user transitions for each emotion pair
+        user_counts = {}
+        for transition in user_transitions:
             from_emotion = transition.get('from_emotion')
             to_emotion = transition.get('to_emotion')
-            probability = transition.get('probability', 0.5)  # Default to 0.5 if not specified
             
+            if from_emotion not in user_counts:
+                user_counts[from_emotion] = {}
+            
+            if to_emotion not in user_counts[from_emotion]:
+                user_counts[from_emotion][to_emotion] = 0
+            
+            user_counts[from_emotion][to_emotion] += 1
+        
+        # For each emotion, calculate total transitions and then probabilities
+        for from_emotion, to_emotions in user_counts.items():
+            total_transitions = sum(to_emotions.values())
+            
+            # Ensure from_emotion is in transition_probs
             if from_emotion not in transition_probs:
                 transition_probs[from_emotion] = {}
             
-            transition_probs[from_emotion][to_emotion] = probability
-        
-        return transition_probs
+            # For each destination emotion, calculate the blended probability
+            for to_emotion, count in to_emotions.items():
+                # Calculate user-specific probability
+                user_prob = count / total_transitions
+                
+                # Get dataset probability, defaulting to 0 if not available
+                dataset_prob = transition_probs.get(from_emotion, {}).get(to_emotion, 0.0)
+                
+                # Blend probabilities: 70% user, 30% dataset when we have sufficient user data
+                # As user data increases, we give it more weight
+                user_weight = min(0.7, 0.1 + (count / 10) * 0.6)  # 0.1 to 0.7 based on count
+                dataset_weight = 1.0 - user_weight
+                
+                # Calculate blended probability
+                blended_prob = (user_prob * user_weight) + (dataset_prob * dataset_weight)
+                
+                # Update transition probability
+                transition_probs[from_emotion][to_emotion] = blended_prob
         
     def get_user_history(self, user_email):
         """

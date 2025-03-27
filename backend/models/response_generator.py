@@ -1,15 +1,45 @@
 import random
+import logging
+
+# Import dataset integrations
+try:
+    from .dataset.mental_health_integration import MentalHealthIntegration
+    MENTAL_HEALTH_AVAILABLE = True
+except ImportError:
+    MENTAL_HEALTH_AVAILABLE = False
+    logging.warning("Mental Health integration not available")
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class ResponseGenerator:
     """
     Class for generating responses based on user input and emotion analysis.
-    In a production environment, this would use GPT or a similar model.
+    Enhanced with Mental Health dataset insights for better response personalization.
     """
     
-    def __init__(self):
+    def __init__(self, use_mental_health=True):
         # Track previously used templates to avoid repetition
         self.last_used_templates = {}
-        self.template_history = []
+        self.template_history = {}
+        
+        # Initialize Mental Health integration if requested
+        self.use_mental_health = use_mental_health and MENTAL_HEALTH_AVAILABLE
+        self.using_mental_health = False
+        
+        if self.use_mental_health:
+            try:
+                logger.info("Loading Mental Health dataset integration...")
+                self.mental_health = MentalHealthIntegration()
+                if self.mental_health.loaded:
+                    self.using_mental_health = True
+                    logger.info("Mental Health dataset integration loaded successfully")
+                else:
+                    logger.warning("Mental Health dataset models not loaded. Some features will be limited.")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Mental Health integration: {str(e)}")
+                self.using_mental_health = False
         # Define response templates for different emotions
         self.positive_templates = [
             "That's wonderful! I'm glad to hear you're feeling {emotion}. What made you feel this way?",
@@ -166,6 +196,7 @@ class ResponseGenerator:
     def generate_with_memory(self, text, emotion_data, memories=None, suggested_actions=None, emotion_history=None, **kwargs):
         """
         Generate a personalized response incorporating emotional history and suggested actions.
+        Enhanced with Mental Health dataset insights for better personalization.
         
         Args:
             text (str): The user's input text
@@ -179,11 +210,21 @@ class ResponseGenerator:
             dict: A response object with text and suggested actions
         """
         # Log for debugging
-        print(f"generate_with_memory called with emotion: {emotion_data.get('primary_emotion')}")
+        logger.info(f"generate_with_memory called with emotion: {emotion_data.get('primary_emotion')}")
         if emotion_history:
-            print(f"Emotion history has {len(emotion_history)} entries")
+            logger.info(f"Emotion history has {len(emotion_history)} entries")
             for i, entry in enumerate(emotion_history[:3]):
-                print(f"History entry {i}: {entry.get('primary_emotion')}")
+                logger.info(f"History entry {i}: {entry.get('primary_emotion')}")
+                
+        # Prepare user context for personalization
+        user_context = {
+            'text': text,
+            'current_emotion': emotion_data.get('primary_emotion', 'neutral'),
+            'is_positive': emotion_data.get('is_positive', False),
+            'emotion_history': emotion_history,
+            'memories': memories,
+            'additional_context': kwargs
+        }
         
         # Ensure emotion_data has all required fields
         if not emotion_data or not isinstance(emotion_data, dict):
@@ -232,6 +273,33 @@ class ResponseGenerator:
             else:
                 print("No emotion change detected or previous emotion is None")
         
+        # Try to use Mental Health dataset for more personalized responses
+        if self.using_mental_health and emotion_history and len(emotion_history) >= 2:
+            try:
+                # If emotion has changed, use transition-specific response
+                if emotion_changed and previous_emotion:
+                    # Get transition-specific response
+                    transition_response = self.mental_health.generate_transition_response(
+                        previous_emotion, primary_emotion, user_context
+                    )
+                    
+                    if transition_response:
+                        logger.info(f"Using mental health transition response for {previous_emotion} to {primary_emotion}")
+                        return transition_response
+                
+                # If we have enough emotion history, use sequence-specific response
+                if len(emotion_history) >= 3:
+                    emotion_sequence = [primary_emotion] + [entry.get('primary_emotion') for entry in emotion_history[:4]]
+                    sequence_response = self.mental_health.generate_emotion_sequence_response(
+                        emotion_sequence, user_context
+                    )
+                    
+                    if sequence_response:
+                        logger.info(f"Using mental health sequence response")
+                        return sequence_response
+            except Exception as e:
+                logger.error(f"Error using Mental Health dataset for response generation: {str(e)}")
+                
         # Create a more personalized response by adding context about emotional journey
         if emotion_history and not is_positive:
             # Add encouragement based on past positive emotions if current emotion is negative
@@ -412,18 +480,34 @@ class ResponseGenerator:
         
 
         
-    def _get_suggested_actions(self, emotion, count=3):
+    def _get_suggested_actions(self, emotion, count=3, user_context=None):
         """
-        Get suggested actions for the given emotion.
+        Get suggested actions for the given emotion, enhanced with Mental Health dataset insights.
         
         Args:
             emotion (str): The emotion to get suggestions for
             count (int): Number of suggestions to return
+            user_context (dict): Optional user context data for personalization
             
         Returns:
             list: List of suggested actions
         """
-        # Get suggestions for the emotion, or default to neutral
+        # Try to get personalized suggestions from Mental Health dataset first
+        if self.using_mental_health and user_context:
+            try:
+                # Get personalized suggestions from Mental Health dataset
+                personalized_suggestions = self.mental_health.get_personalized_interventions(
+                    emotion, user_context
+                )
+                
+                if personalized_suggestions and len(personalized_suggestions) >= count:
+                    # Return data-driven personalized suggestions
+                    logger.info(f"Using personalized suggestions for {emotion} from Mental Health dataset")
+                    return personalized_suggestions[:count]
+            except Exception as e:
+                logger.error(f"Error getting personalized suggestions from Mental Health dataset: {str(e)}")
+        
+        # Fallback to standard suggestions if the above doesn't work
         all_suggestions = self.suggested_actions.get(emotion, self.suggested_actions['neutral'])
         
         # Randomly select a subset of suggestions
@@ -431,3 +515,311 @@ class ResponseGenerator:
             return all_suggestions
         else:
             return random.sample(all_suggestions, count)
+            
+    def get_transition_response(self, from_emotion, to_emotion, user_context=None):
+        """
+        Generate a response that addresses the transition between two emotions,
+        using insights from the Mental Health dataset.
+        
+        Args:
+            from_emotion (str): The starting emotion
+            to_emotion (str): The target emotion
+            user_context (dict): Optional user context for personalization
+            
+        Returns:
+            dict: A response object with text and suggested actions
+        """
+        if self.using_mental_health:
+            try:
+                # Get transition-specific response from Mental Health dataset
+                transition_response = self.mental_health.generate_transition_response(
+                    from_emotion, to_emotion, user_context
+                )
+                
+                if transition_response:
+                    logger.info(f"Using mental health transition response for {from_emotion} to {to_emotion}")
+                    return transition_response
+            except Exception as e:
+                logger.error(f"Error getting transition response from Mental Health dataset: {str(e)}")
+        
+        # Fallback to basic transition response
+        return self._get_fallback_transition_response(from_emotion, to_emotion, user_context)
+    
+    def _get_fallback_transition_response(self, from_emotion, to_emotion, user_context=None):
+        """
+        Generate a fallback transition response if Mental Health dataset is not available.
+        """
+        # Categorize emotions
+        positive_emotions = ['joy', 'surprise', 'trust', 'anticipation', 'happy', 'excited']
+        negative_emotions = ['anger', 'disgust', 'fear', 'sadness', 'stressed', 'anxious']
+        
+        # Build basic response
+        response_text = ""
+        suggested_actions = []
+        
+        # Positive to negative transition
+        if from_emotion in positive_emotions and to_emotion in negative_emotions:
+            responses = [
+                f"I notice your emotion has changed from {from_emotion} to {to_emotion}. It's natural for our feelings to fluctuate. What happened that led to this change?",
+                f"Your mood seems to have shifted from {from_emotion} to {to_emotion}. Would you like to share what contributed to this?",
+                f"It seems you're feeling {to_emotion} now, whereas before you were feeling {from_emotion}. What events led to this change?"
+            ]
+            response_text = random.choice(responses)
+            suggested_actions = self._get_suggested_actions(to_emotion)
+            
+        # Negative to positive transition
+        elif from_emotion in negative_emotions and to_emotion in positive_emotions:
+            responses = [
+                f"I notice your emotion has shifted from {from_emotion} to {to_emotion}. That's great! What did you do that helped you reach this more positive state?",
+                f"That's wonderful! Your mood has improved from {from_emotion} to {to_emotion}. What actions or thoughts helped with this positive change?",
+                f"It's great to see your emotional state improve from {from_emotion} to {to_emotion}. What strategies worked for you?"
+            ]
+            response_text = random.choice(responses)
+            suggested_actions = self._get_suggested_actions(to_emotion)
+            
+        # Other transitions
+        else:
+            responses = [
+                f"I notice your emotional state has changed from {from_emotion} to {to_emotion}. What do you think contributed to this shift?",
+                f"Your feelings have shifted from {from_emotion} to {to_emotion}. What factors do you think influenced this change?",
+                f"I see that your emotion has transitioned from {from_emotion} to {to_emotion}. What insights do you have about this change?"
+            ]
+            response_text = random.choice(responses)
+            suggested_actions = self._get_suggested_actions(to_emotion)
+        
+        return {
+            'text': response_text,
+            'suggested_actions': suggested_actions,
+            'emotion_changed': True,
+            'from_emotion': from_emotion,
+            'to_emotion': to_emotion,
+            'source': 'fallback'
+        }
+    
+    def get_emotion_sequence_response(self, emotion_sequence, user_context=None):
+        """
+        Generate a response that addresses a sequence of emotions over time,
+        using insights from the Mental Health dataset.
+        
+        Args:
+            emotion_sequence (list): List of emotions in chronological order
+            user_context (dict): Optional user context for personalization
+            
+        Returns:
+            dict: A response object with text, insights, and suggested actions
+        """
+        if not emotion_sequence or len(emotion_sequence) < 2:
+            return {
+                'text': "I don't have enough information about your emotional journey yet. Keep sharing how you feel.",
+                'suggested_actions': self._get_suggested_actions('neutral'),
+                'insights': [],
+                'patterns': [],
+                'source': 'insufficient_data'
+            }
+        
+        if self.using_mental_health:
+            try:
+                # Get sequence-specific response from Mental Health dataset
+                sequence_response = self.mental_health.generate_emotion_sequence_response(
+                    emotion_sequence, user_context
+                )
+                
+                if sequence_response:
+                    logger.info(f"Using mental health sequence response for a sequence of {len(emotion_sequence)} emotions")
+                    return sequence_response
+            except Exception as e:
+                logger.error(f"Error getting sequence response from Mental Health dataset: {str(e)}")
+        
+        # Fallback to basic sequence analysis response
+        return self._get_fallback_sequence_response(emotion_sequence, user_context)
+    
+    def _get_fallback_sequence_response(self, emotion_sequence, user_context=None):
+        """
+        Generate a fallback sequence response if Mental Health dataset is not available.
+        """
+        # Categorize emotions
+        positive_emotions = ['joy', 'surprise', 'trust', 'anticipation', 'happy', 'excited']
+        negative_emotions = ['anger', 'disgust', 'fear', 'sadness', 'stressed', 'anxious']
+        neutral_emotions = ['neutral']
+        
+        # Simple analysis
+        current_emotion = emotion_sequence[-1]
+        positive_count = sum(1 for e in emotion_sequence if e in positive_emotions)
+        negative_count = sum(1 for e in emotion_sequence if e in negative_emotions)
+        
+        # Check for patterns
+        patterns = []
+        insights = []
+        
+        # Consistent negativity
+        if negative_count >= len(emotion_sequence) * 0.7:
+            patterns.append('persistent_negative')
+            insights.append("You've been experiencing predominantly negative emotions lately.")
+        
+        # Consistent positivity
+        if positive_count >= len(emotion_sequence) * 0.7:
+            patterns.append('persistent_positive')
+            insights.append("You've been maintaining predominantly positive emotions lately.")
+        
+        # Volatility (frequent changes)
+        changes = sum(1 for i in range(len(emotion_sequence)-1) if emotion_sequence[i] != emotion_sequence[i+1])
+        if changes >= len(emotion_sequence) * 0.6:
+            patterns.append('emotional_volatility')
+            insights.append("Your emotions have been changing frequently.")
+        
+        # Improvement trend (from negative to positive)
+        if len(emotion_sequence) >= 3 and all(e in negative_emotions for e in emotion_sequence[:2]) and any(e in positive_emotions for e in emotion_sequence[-2:]):
+            patterns.append('improvement_trend')
+            insights.append("There seems to be a positive trend in your emotional journey.")
+        
+        # Deterioration trend (from positive to negative)
+        if len(emotion_sequence) >= 3 and all(e in positive_emotions for e in emotion_sequence[:2]) and any(e in negative_emotions for e in emotion_sequence[-2:]):
+            patterns.append('deterioration_trend')
+            insights.append("There appears to be a shift toward more challenging emotions recently.")
+        
+        # Build response based on patterns
+        response_text = f"Based on your recent emotional journey, "
+        
+        if 'persistent_negative' in patterns:
+            response_text += "you've been experiencing consistent challenging emotions. It's important to acknowledge these feelings and consider reaching out for support if needed. "
+            suggested_actions = self._get_suggested_actions('sadness')
+        elif 'persistent_positive' in patterns:
+            response_text += "you've been maintaining a positive emotional state. That's wonderful! What activities or practices do you think are contributing to this?"
+            suggested_actions = self._get_suggested_actions('joy')
+        elif 'improvement_trend' in patterns:
+            response_text += "I notice an improvement in your emotional state. What changes or strategies do you think helped with this positive shift?"
+            suggested_actions = self._get_suggested_actions(current_emotion)
+        elif 'deterioration_trend' in patterns:
+            response_text += "I notice your emotions have become more challenging recently. What factors might be contributing to this change?"
+            suggested_actions = self._get_suggested_actions(current_emotion)
+        elif 'emotional_volatility' in patterns:
+            response_text += "your emotions have been fluctuating frequently. This kind of emotional volatility can sometimes be challenging. Would developing emotional regulation strategies be helpful for you?"
+            suggested_actions = ["Practice mindfulness meditation", "Maintain a regular sleep schedule", "Identify emotion triggers in your journal"]
+        else:
+            response_text += "I notice a mix of different emotions in your journey. Reflecting on these patterns might provide valuable insights about your wellbeing."
+            suggested_actions = self._get_suggested_actions(current_emotion)
+        
+        return {
+            'text': response_text,
+            'suggested_actions': suggested_actions,
+            'insights': insights,
+            'patterns': patterns,
+            'source': 'fallback'
+        }
+        
+    def get_intervention_effectiveness(self, emotion, intervention, user_context=None):
+        """
+        Get the effectiveness data for a specific intervention for a given emotion,
+        using insights from the Mental Health dataset.
+        
+        Args:
+            emotion (str): The target emotion
+            intervention (str): The intervention to evaluate
+            user_context (dict): Optional user context for personalization
+            
+        Returns:
+            dict: Effectiveness data including score and supporting evidence
+        """
+        if self.using_mental_health:
+            try:
+                # Get intervention effectiveness from Mental Health dataset
+                effectiveness_data = self.mental_health.get_intervention_effectiveness(
+                    emotion, intervention, user_context
+                )
+                
+                if effectiveness_data:
+                    logger.info(f"Using mental health effectiveness data for {intervention} on {emotion}")
+                    return effectiveness_data
+            except Exception as e:
+                logger.error(f"Error getting intervention effectiveness from Mental Health dataset: {str(e)}")
+        
+        # Fallback to basic effectiveness estimation
+        return self._get_fallback_intervention_effectiveness(emotion, intervention)
+    
+    def _get_fallback_intervention_effectiveness(self, emotion, intervention):
+        """
+        Generate fallback intervention effectiveness if Mental Health dataset is not available.
+        """
+        # Map of common interventions to their general effectiveness for different emotions
+        effectiveness_map = {
+            'meditation': {
+                'anger': 0.7,
+                'anxiety': 0.8,
+                'sadness': 0.6,
+                'stress': 0.75,
+                'default': 0.65
+            },
+            'exercise': {
+                'sadness': 0.8,
+                'anxiety': 0.75,
+                'stress': 0.85,
+                'anger': 0.7,
+                'default': 0.7
+            },
+            'social': {
+                'sadness': 0.85,
+                'loneliness': 0.9,
+                'anxiety': 0.6,
+                'default': 0.65
+            },
+            'nature': {
+                'stress': 0.8,
+                'anxiety': 0.7,
+                'sadness': 0.65,
+                'default': 0.7
+            },
+            'creative': {
+                'sadness': 0.7,
+                'stress': 0.65,
+                'anger': 0.6,
+                'default': 0.6
+            },
+            'default': 0.5
+        }
+        
+        # Determine intervention category
+        intervention_category = 'default'
+        intervention_lower = intervention.lower()
+        
+        if any(word in intervention_lower for word in ['meditate', 'mindful', 'breathing', 'relax', 'calm']):
+            intervention_category = 'meditation'
+        elif any(word in intervention_lower for word in ['exercise', 'walk', 'run', 'gym', 'physical', 'yoga']):
+            intervention_category = 'exercise'
+        elif any(word in intervention_lower for word in ['friend', 'family', 'social', 'connect', 'talk', 'share']):
+            intervention_category = 'social'
+        elif any(word in intervention_lower for word in ['nature', 'outside', 'outdoor', 'park', 'garden']):
+            intervention_category = 'nature'
+        elif any(word in intervention_lower for word in ['art', 'music', 'write', 'create', 'draw', 'paint', 'play']):
+            intervention_category = 'creative'
+        
+        # Get effectiveness score
+        if intervention_category in effectiveness_map:
+            category_map = effectiveness_map[intervention_category]
+            effectiveness = category_map.get(emotion, category_map.get('default', 0.5))
+        else:
+            effectiveness = effectiveness_map['default']
+        
+        # Generate supporting evidence
+        evidence = []
+        
+        if effectiveness >= 0.8:
+            evidence.append("Research suggests this is highly effective for many people")
+        elif effectiveness >= 0.65:
+            evidence.append("Studies indicate this can be moderately effective")
+        else:
+            evidence.append("This may help some individuals, though effects vary")
+        
+        # Add emotion-specific evidence
+        if intervention_category == 'meditation' and emotion in ['anxiety', 'stress']:
+            evidence.append("Mindfulness practices have been shown to reduce stress and anxiety symptoms")
+        elif intervention_category == 'exercise' and emotion in ['sadness', 'depression']:
+            evidence.append("Physical activity can help release endorphins that improve mood")
+        elif intervention_category == 'social' and emotion in ['sadness', 'loneliness']:
+            evidence.append("Social connection is linked to reduced depression symptoms")
+        
+        return {
+            'effectiveness_score': effectiveness,
+            'supporting_evidence': evidence,
+            'confidence': 'medium',
+            'source': 'fallback'
+        }
