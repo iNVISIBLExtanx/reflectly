@@ -1,0 +1,6 @@
+{"user_email": "user1@example.com", "from_emotion": "joy", "to_emotion": "sadness", "frequency": 1}
+{"user_email": "user1@example.com", "from_emotion": "sadness", "to_emotion": "anger", "frequency": 1}
+{"user_email": "user1@example.com", "from_emotion": "anger", "to_emotion": "joy", "frequency": 1}
+{"user_email": "user2@example.com", "from_emotion": "fear", "to_emotion": "disgust", "frequency": 1}
+{"user_email": "user2@example.com", "from_emotion": "disgust", "to_emotion": "sadness", "frequency": 1}
+{"user_email": "user2@example.com", "from_emotion": "sadness", "to_emotion": "joy", "frequency": 1}
