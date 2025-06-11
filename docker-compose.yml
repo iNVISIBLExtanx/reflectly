@@ -1,63 +1,29 @@
-version: '3.8'
+# Simple Reflectly AI - No Docker Needed!
 
-services:
-  # MongoDB Database
-  mongodb:
-    image: mongo:7.0
-    container_name: reflectly-mongodb
-    restart: unless-stopped
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: admin
-      MONGO_INITDB_ROOT_PASSWORD: password
-      MONGO_INITDB_DATABASE: reflectly
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongodb_data:/data/db
-    networks:
-      - reflectly-network
+This project now uses a simplified setup without Docker.
 
-  # Backend API (Flask)
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: reflectly-backend
-    restart: unless-stopped
-    environment:
-      MONGODB_URI: mongodb://admin:password@mongodb:27017/reflectly?authSource=admin
-      FLASK_ENV: development
-    ports:
-      - "5002:5002"
-    depends_on:
-      - mongodb
-    volumes:
-      - ./backend:/app
-    networks:
-      - reflectly-network
+## Quick Start:
+```bash
+# One command to start everything
+chmod +x start-simple.sh
+./start-simple.sh
+```
 
-  # Frontend (React)
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: reflectly-frontend
-    restart: unless-stopped
-    environment:
-      REACT_APP_API_BASE_URL: http://localhost:5002
-    ports:
-      - "3000:3000"
-    depends_on:
-      - backend
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-    networks:
-      - reflectly-network
+## Requirements:
+- Python 3.7+
+- Node.js 16+
+- npm
 
-volumes:
-  mongodb_data:
+## What was removed:
+- docker-compose.yml (replaced with simple scripts)
+- Dockerfiles (no containerization needed)
+- Complex orchestration (direct Python/Node execution)
 
-networks:
-  reflectly-network:
-    driver: bridge
+## Benefits:
+- Faster startup (no container building)
+- Easier debugging (direct access to processes)
+- Simpler development (direct file editing)
+- No Docker installation required
+- Native performance (no container overhead)
+
+For the previous Docker setup, check the earlier commits in this branch.
