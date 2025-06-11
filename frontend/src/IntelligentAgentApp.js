@@ -9,8 +9,10 @@ const IntelligentAgentApp = () => {
   const [showingStepsForm, setShowingStepsForm] = useState(false);
   const [currentExperienceId, setCurrentExperienceId] = useState('');
   const [stepsInput, setStepsInput] = useState(['']);
+  const [backendStatus, setBackendStatus] = useState('checking');
 
-  const API_BASE = '/api';
+  // Try proxy first, fallback to direct API
+  const API_BASE = process.env.NODE_ENV === 'development' ? 'http://localhost:5000/api' : '/api';
 
   // Emotion colors for map visualization
   const emotionColors = {
@@ -24,13 +26,69 @@ const IntelligentAgentApp = () => {
   };
 
   useEffect(() => {
-    loadMemoryMap();
-    loadMemoryStats();
+    checkBackendStatus();
   }, []);
 
-  const loadMemoryMap = async () => {
+  const checkBackendStatus = async () => {
     try {
-      const response = await fetch(`${API_BASE}/memory-map`);
+      // Try direct connection first
+      let response = await fetch('http://localhost:5000/api/health');
+      let apiBase = 'http://localhost:5000/api';
+      
+      if (!response.ok) {
+        // Try proxy
+        response = await fetch('/api/health');
+        apiBase = '/api';
+      }
+      
+      if (response.ok) {
+        const data = await response.json();
+        setBackendStatus('connected');
+        console.log('✅ Backend connected:', data);
+        
+        // Load initial data
+        await loadMemoryMap(apiBase);
+        await loadMemoryStats(apiBase);
+      } else {
+        setBackendStatus('error');
+      }
+    } catch (error) {
+      console.error('❌ Backend connection failed:', error);
+      setBackendStatus('error');
+    }
+  };
+
+  const makeApiCall = async (endpoint, options = {}) => {
+    // Try direct connection first, then proxy
+    const urls = [
+      `http://localhost:5000/api${endpoint}`,
+      `/api${endpoint}`
+    ];
+    
+    for (const url of urls) {
+      try {
+        const response = await fetch(url, {
+          ...options,
+          headers: {
+            'Content-Type': 'application/json',
+            ...options.headers
+          }
+        });
+        
+        if (response.ok) {
+          return response;
+        }
+      } catch (error) {
+        console.log(`Failed to connect to ${url}:`, error.message);
+      }
+    }
+    
+    throw new Error('Could not connect to backend');
+  };
+
+  const loadMemoryMap = async (apiBase = API_BASE) => {
+    try {
+      const response = await makeApiCall('/memory-map');
       if (response.ok) {
         const data = await response.json();
         setMemoryMap(data);
@@ -40,9 +98,9 @@ const IntelligentAgentApp = () => {
     }
   };
 
-  const loadMemoryStats = async () => {
+  const loadMemoryStats = async (apiBase = API_BASE) => {
     try {
-      const response = await fetch(`${API_BASE}/memory-stats`);
+      const response = await makeApiCall('/memory-stats');
       if (response.ok) {
         const data = await response.json();
         setMemoryStats(data);
@@ -57,9 +115,8 @@ const IntelligentAgentApp = () => {
 
     setLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/process-input`, {
+      const response = await makeApiCall('/process-input', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text: inputText,
           user_id: 'user1'
@@ -97,9 +154,28 @@ const IntelligentAgentApp = () => {
         // Reload memory map and stats
         await loadMemoryMap();
         await loadMemoryStats();
+      } else {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
     } catch (error) {
       console.error('Error processing input:', error);
+      
+      // Add error message to conversation
+      setConversation(prev => [
+        ...prev,
+        {
+          type: 'user',
+          text: inputText,
+          timestamp: new Date().toLocaleTimeString()
+        },
+        {
+          type: 'agent',
+          message: `❌ Sorry, I couldn't process your input. Error: ${error.message}. Make sure the backend is running on port 5000.`,
+          timestamp: new Date().toLocaleTimeString()
+        }
+      ]);
+      
+      setInputText('');
     } finally {
       setLoading(false);
     }
@@ -111,9 +187,8 @@ const IntelligentAgentApp = () => {
 
     setLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/save-steps`, {
+      const response = await makeApiCall('/save-steps', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           experience_id: currentExperienceId,
           steps: steps
@@ -141,9 +216,12 @@ const IntelligentAgentApp = () => {
         // Reload memory map and stats
         await loadMemoryMap();
         await loadMemoryStats();
+      } else {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
     } catch (error) {
       console.error('Error saving steps:', error);
+      alert(`Failed to save steps: ${error.message}`);
     } finally {
       setLoading(false);
     }
@@ -168,9 +246,8 @@ const IntelligentAgentApp = () => {
   const resetMemory = async () => {
     if (window.confirm('Are you sure you want to reset the memory map? This will clear all learned experiences.')) {
       try {
-        const response = await fetch(`${API_BASE}/reset-memory`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
+        const response = await makeApiCall('/reset-memory', {
+          method: 'POST'
         });
 
         if (response.ok) {
@@ -178,11 +255,44 @@ const IntelligentAgentApp = () => {
           setMemoryMap({ nodes: [], edges: [] });
           setMemoryStats({});
           alert('Memory map reset successfully!');
+        } else {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
       } catch (error) {
         console.error('Error resetting memory:', error);
+        alert(`Failed to reset memory: ${error.message}`);
       }
     }
+  };
+
+  const renderBackendStatus = () => {
+    const statusInfo = {
+      checking: { color: '#ffc107', text: 'Checking backend...', icon: '🔍' },
+      connected: { color: '#28a745', text: 'Backend connected', icon: '✅' },
+      error: { color: '#dc3545', text: 'Backend not connected', icon: '❌' }
+    };
+
+    const status = statusInfo[backendStatus] || statusInfo.error;
+
+    return (
+      <div style={{
+        background: status.color,
+        color: 'white',
+        padding: '8px 15px',
+        borderRadius: '5px',
+        margin: '10px 0',
+        textAlign: 'center',
+        fontSize: '14px',
+        fontWeight: 'bold'
+      }}>
+        {status.icon} {status.text}
+        {backendStatus === 'error' && (
+          <div style={{fontSize: '12px', marginTop: '5px', fontWeight: 'normal'}}>
+            Make sure to run: ./start-agent.sh or python backend/intelligent_agent.py
+          </div>
+        )}
+      </div>
+    );
   };
 
   const renderMemoryMap = () => {
@@ -306,6 +416,13 @@ const IntelligentAgentApp = () => {
         {conversation.length === 0 ? (
           <div style={{ textAlign: 'center', color: '#666', fontStyle: 'italic', marginTop: '150px' }}>
             👋 Hi! I'm your intelligent agent. Tell me how you're feeling and I'll learn from your experiences to help you better.
+            <br /><br />
+            <div style={{ fontSize: '12px', color: '#999' }}>
+              {backendStatus === 'error' ? 
+                '⚠️ Make sure to start the backend first!' : 
+                '✅ Ready to learn from your experiences!'
+              }
+            </div>
           </div>
         ) : (
           conversation.map((message, index) => (
@@ -458,9 +575,11 @@ const IntelligentAgentApp = () => {
       <h1 style={{ textAlign: 'center', color: '#333', marginBottom: '10px' }}>
         🤖 Intelligent Agent with Memory Map
       </h1>
-      <p style={{ textAlign: 'center', color: '#666', marginBottom: '30px' }}>
+      <p style={{ textAlign: 'center', color: '#666', marginBottom: '20px' }}>
         An AI that learns from your experiences and uses A* search to suggest helpful actions
       </p>
+
+      {renderBackendStatus()}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '30px' }}>
         {/* Left Side - Conversation */}
@@ -484,17 +603,18 @@ const IntelligentAgentApp = () => {
                 borderRadius: '8px',
                 fontSize: '14px'
               }}
+              disabled={backendStatus !== 'connected'}
             />
             <button
               onClick={processInput}
-              disabled={loading || !inputText.trim()}
+              disabled={loading || !inputText.trim() || backendStatus !== 'connected'}
               style={{
                 padding: '12px 24px',
-                background: '#007bff',
+                background: backendStatus === 'connected' ? '#007bff' : '#ccc',
                 color: '#fff',
                 border: 'none',
                 borderRadius: '8px',
-                cursor: 'pointer',
+                cursor: backendStatus === 'connected' ? 'pointer' : 'not-allowed',
                 fontWeight: 'bold'
               }}
             >
@@ -558,14 +678,15 @@ const IntelligentAgentApp = () => {
           {/* Reset Button */}
           <button
             onClick={resetMemory}
+            disabled={backendStatus !== 'connected'}
             style={{
               marginTop: '15px',
               padding: '8px 16px',
-              background: '#dc3545',
+              background: backendStatus === 'connected' ? '#dc3545' : '#ccc',
               color: '#fff',
               border: 'none',
               borderRadius: '6px',
-              cursor: 'pointer',
+              cursor: backendStatus === 'connected' ? 'pointer' : 'not-allowed',
               fontSize: '12px'
             }}
           >
