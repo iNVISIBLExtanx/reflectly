@@ -12,7 +12,15 @@ import math
 import heapq
 
 app = Flask(__name__)
-CORS(app)
+
+# Configure CORS properly
+CORS(app, resources={
+    r"/api/*": {
+        "origins": ["http://localhost:3000", "http://127.0.0.1:3000"],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"]
+    }
+})
 
 # In-memory storage (replace database)
 emotional_states = []
@@ -29,12 +37,12 @@ class SimpleEmotionAnalyzer:
     
     def __init__(self):
         self.emotion_keywords = {
-            'joy': ['happy', 'excited', 'joy', 'cheerful', 'glad', 'delighted', 'pleased', 'thrilled', 'elated'],
-            'sadness': ['sad', 'depressed', 'down', 'upset', 'miserable', 'gloomy', 'sorrowful', 'melancholy'],
-            'anger': ['angry', 'furious', 'mad', 'irritated', 'annoyed', 'frustrated', 'rage', 'livid'],
-            'fear': ['scared', 'afraid', 'frightened', 'worried', 'anxious', 'nervous', 'terrified', 'panic'],
-            'disgust': ['disgusted', 'revolted', 'sickened', 'appalled', 'repulsed', 'nauseated'],
-            'surprise': ['surprised', 'shocked', 'amazed', 'astonished', 'stunned', 'unexpected'],
+            'joy': ['happy', 'excited', 'joy', 'cheerful', 'glad', 'delighted', 'pleased', 'thrilled', 'elated', 'amazing', 'awesome', 'fantastic', 'wonderful', 'great'],
+            'sadness': ['sad', 'depressed', 'down', 'upset', 'miserable', 'gloomy', 'sorrowful', 'melancholy', 'disappointed', 'heartbroken', 'crying', 'tears'],
+            'anger': ['angry', 'furious', 'mad', 'irritated', 'annoyed', 'frustrated', 'rage', 'livid', 'pissed', 'outraged', 'hostile', 'aggressive'],
+            'fear': ['scared', 'afraid', 'frightened', 'worried', 'anxious', 'nervous', 'terrified', 'panic', 'overwhelmed', 'stressed', 'concerned', 'uneasy'],
+            'disgust': ['disgusted', 'revolted', 'sickened', 'appalled', 'repulsed', 'nauseated', 'grossed', 'revolting', 'disgusting'],
+            'surprise': ['surprised', 'shocked', 'amazed', 'astonished', 'stunned', 'unexpected', 'wow', 'incredible', 'unbelievable'],
         }
     
     def analyze(self, text):
@@ -75,14 +83,52 @@ class AStarPathfinder:
         self.base_costs = {
             ('sadness', 'joy'): 2.0,
             ('sadness', 'neutral'): 1.0,
+            ('sadness', 'anger'): 1.3,
+            ('sadness', 'fear'): 1.2,
+            ('sadness', 'disgust'): 1.1,
+            ('sadness', 'surprise'): 1.8,
+            
             ('anger', 'joy'): 2.2,
             ('anger', 'neutral'): 1.3,
+            ('anger', 'sadness'): 1.2,
+            ('anger', 'fear'): 1.1,
+            ('anger', 'disgust'): 0.9,
+            ('anger', 'surprise'): 1.5,
+            
             ('fear', 'joy'): 2.1,
             ('fear', 'neutral'): 1.2,
+            ('fear', 'sadness'): 1.1,
+            ('fear', 'anger'): 1.0,
+            ('fear', 'disgust'): 0.9,
+            ('fear', 'surprise'): 1.4,
+            
             ('disgust', 'joy'): 2.0,
             ('disgust', 'neutral'): 1.1,
+            ('disgust', 'sadness'): 1.0,
+            ('disgust', 'anger'): 0.8,
+            ('disgust', 'fear'): 0.9,
+            ('disgust', 'surprise'): 1.3,
+            
             ('neutral', 'joy'): 0.7,
-            # Add reverse and other combinations
+            ('neutral', 'sadness'): 0.8,
+            ('neutral', 'anger'): 0.9,
+            ('neutral', 'fear'): 0.8,
+            ('neutral', 'disgust'): 0.9,
+            ('neutral', 'surprise'): 0.6,
+            
+            ('joy', 'neutral'): 0.8,
+            ('joy', 'sadness'): 1.5,
+            ('joy', 'anger'): 1.8,
+            ('joy', 'fear'): 1.7,
+            ('joy', 'disgust'): 1.6,
+            ('joy', 'surprise'): 0.5,
+            
+            ('surprise', 'joy'): 0.6,
+            ('surprise', 'neutral'): 0.7,
+            ('surprise', 'sadness'): 1.2,
+            ('surprise', 'anger'): 1.4,
+            ('surprise', 'fear'): 1.3,
+            ('surprise', 'disgust'): 1.2,
         }
         
         # Fill in missing combinations with default values
@@ -112,7 +158,7 @@ class AStarPathfinder:
                 neighbors[target] = {
                     'cost': cost,
                     'action': action,
-                    'success_rate': 1.0 / cost  # Higher cost = lower success rate
+                    'success_rate': min(1.0, 1.0 / cost)  # Higher cost = lower success rate
                 }
         return neighbors
     
@@ -121,13 +167,52 @@ class AStarPathfinder:
         actions = {
             ('sadness', 'joy'): "Engage in activities you enjoy",
             ('sadness', 'neutral'): "Practice mindfulness meditation",
+            ('sadness', 'anger'): "Express your feelings constructively",
+            ('sadness', 'fear'): "Identify specific concerns",
+            ('sadness', 'disgust'): "Focus on positive aspects",
+            ('sadness', 'surprise'): "Try something new and unexpected",
+            
             ('anger', 'joy'): "Channel energy into positive activities",
             ('anger', 'neutral'): "Take deep breaths and count to 10",
+            ('anger', 'sadness'): "Reflect on underlying feelings",
+            ('anger', 'fear'): "Consider potential consequences",
+            ('anger', 'disgust'): "Shift focus to solutions",
+            ('anger', 'surprise'): "Do something unexpected to break the pattern",
+            
             ('fear', 'joy'): "Focus on positive outcomes",
             ('fear', 'neutral'): "Ground yourself in the present moment",
+            ('fear', 'sadness'): "Share your concerns with someone you trust",
+            ('fear', 'anger'): "Channel fear into productive action",
+            ('fear', 'disgust'): "Challenge negative thoughts",
+            ('fear', 'surprise'): "Embrace uncertainty as opportunity",
+            
             ('disgust', 'joy'): "Focus on things you appreciate",
             ('disgust', 'neutral'): "Practice acceptance",
+            ('disgust', 'sadness'): "Explore underlying values",
+            ('disgust', 'anger'): "Set boundaries",
+            ('disgust', 'fear'): "Examine core concerns",
+            ('disgust', 'surprise'): "Look for unexpected positive aspects",
+            
             ('neutral', 'joy'): "Engage in activities you enjoy",
+            ('neutral', 'sadness'): "Allow yourself to feel emotions",
+            ('neutral', 'anger'): "Identify sources of frustration",
+            ('neutral', 'fear'): "Acknowledge concerns",
+            ('neutral', 'disgust'): "Identify values being challenged",
+            ('neutral', 'surprise'): "Seek out new experiences",
+            
+            ('joy', 'neutral'): "Practice mindfulness",
+            ('joy', 'sadness'): "Reflect on meaningful experiences",
+            ('joy', 'anger'): "Channel energy constructively",
+            ('joy', 'fear'): "Consider growth opportunities",
+            ('joy', 'disgust'): "Examine values and boundaries",
+            ('joy', 'surprise'): "Share your joy with others",
+            
+            ('surprise', 'joy'): "Embrace the unexpected",
+            ('surprise', 'neutral'): "Reflect on what surprised you",
+            ('surprise', 'sadness'): "Process your feelings about the surprise",
+            ('surprise', 'anger'): "Consider why this triggered anger",
+            ('surprise', 'fear'): "Identify what feels threatening",
+            ('surprise', 'disgust'): "Examine your boundaries",
         }
         return actions.get((from_emotion, to_emotion), f"Work on transitioning from {from_emotion} to {to_emotion}")
     
@@ -225,165 +310,211 @@ pathfinder = AStarPathfinder()
 # API Routes
 @app.route('/api/health', methods=['GET'])
 def health():
-    return jsonify({"status": "healthy", "message": "Simple AI backend running"})
-
-@app.route('/api/emotions/analyze', methods=['POST'])
-def analyze_emotion():
-    data = request.get_json()
-    text = data.get('text', '')
-    user_email = data.get('user_email', 'demo@example.com')
-    
-    if not text:
-        return jsonify({"error": "Text is required"}), 400
-    
-    # Analyze emotion
-    result = emotion_analyzer.analyze(text)
-    
-    # Store in memory
-    emotion_entry = {
-        'id': len(emotional_states),
-        'user_email': user_email,
-        'text': text,
-        'timestamp': datetime.datetime.now().isoformat(),
-        **result
-    }
-    emotional_states.append(emotion_entry)
-    user_data[user_email].append(emotion_entry)
-    
-    return jsonify(result)
-
-@app.route('/api/emotions/path', methods=['POST'])
-def find_path():
-    data = request.get_json()
-    current_emotion = data.get('current_emotion', '')
-    target_emotion = data.get('target_emotion', '')
-    
-    if not current_emotion or not target_emotion:
-        return jsonify({"error": "current_emotion and target_emotion are required"}), 400
-    
-    if current_emotion not in EMOTIONS or target_emotion not in EMOTIONS:
-        return jsonify({"error": "Invalid emotion"}), 400
-    
-    # Find optimal path
-    result = pathfinder.find_path(current_emotion, target_emotion)
-    
     return jsonify({
-        'current_emotion': current_emotion,
-        'target_emotion': target_emotion,
-        **result
+        "status": "healthy", 
+        "message": "Simple AI backend running",
+        "cors_enabled": True,
+        "endpoints": [
+            "/api/emotions/analyze",
+            "/api/emotions/path", 
+            "/api/emotions/available",
+            "/api/emotions/suggestions",
+            "/api/test-algorithm"
+        ]
     })
+
+@app.route('/api/emotions/analyze', methods=['POST', 'OPTIONS'])
+def analyze_emotion():
+    if request.method == 'OPTIONS':
+        # Handle preflight request
+        return '', 200
+        
+    try:
+        data = request.get_json()
+        text = data.get('text', '')
+        user_email = data.get('user_email', 'demo@example.com')
+        
+        if not text:
+            return jsonify({"error": "Text is required"}), 400
+        
+        # Analyze emotion
+        result = emotion_analyzer.analyze(text)
+        
+        # Store in memory
+        emotion_entry = {
+            'id': len(emotional_states),
+            'user_email': user_email,
+            'text': text,
+            'timestamp': datetime.datetime.now().isoformat(),
+            **result
+        }
+        emotional_states.append(emotion_entry)
+        user_data[user_email].append(emotion_entry)
+        
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
+
+@app.route('/api/emotions/path', methods=['POST', 'OPTIONS'])
+def find_path():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    try:
+        data = request.get_json()
+        current_emotion = data.get('current_emotion', '')
+        target_emotion = data.get('target_emotion', '')
+        
+        if not current_emotion or not target_emotion:
+            return jsonify({"error": "current_emotion and target_emotion are required"}), 400
+        
+        if current_emotion not in EMOTIONS or target_emotion not in EMOTIONS:
+            return jsonify({"error": "Invalid emotion"}), 400
+        
+        # Find optimal path
+        result = pathfinder.find_path(current_emotion, target_emotion)
+        
+        return jsonify({
+            'current_emotion': current_emotion,
+            'target_emotion': target_emotion,
+            **result
+        })
+    except Exception as e:
+        return jsonify({"error": f"Pathfinding failed: {str(e)}"}), 500
 
 @app.route('/api/emotions/available', methods=['GET'])
 def get_emotions():
     return jsonify({"emotions": EMOTIONS})
 
-@app.route('/api/emotions/suggestions', methods=['POST'])
+@app.route('/api/emotions/suggestions', methods=['POST', 'OPTIONS'])
 def get_suggestions():
-    data = request.get_json()
-    current_emotion = data.get('current_emotion', '')
-    
-    suggestions = {
-        'sadness': [
-            "Listen to uplifting music",
-            "Call a friend or family member", 
-            "Take a walk in nature",
-            "Practice gratitude by writing 3 good things"
-        ],
-        'anger': [
-            "Take 10 deep breaths",
-            "Do some physical exercise",
-            "Write down your feelings",
-            "Count to 10 slowly"
-        ],
-        'fear': [
-            "Practice grounding techniques",
-            "Challenge negative thoughts",
-            "Talk to someone you trust",
-            "Focus on what you can control"
-        ],
-        'disgust': [
-            "Focus on positive aspects",
-            "Practice acceptance",
-            "Engage in a pleasant activity",
-            "Connect with supportive people"
-        ],
-        'neutral': [
-            "Set a small goal for today",
-            "Practice mindfulness",
-            "Try something new",
-            "Express gratitude"
-        ],
-        'joy': [
-            "Share your happiness with others",
-            "Savor the moment",
-            "Use this energy for creative activities",
-            "Help someone else"
-        ],
-        'surprise': [
-            "Reflect on what surprised you",
-            "Consider what you can learn",
-            "Share the experience",
-            "Embrace the unexpected"
-        ]
-    }
-    
-    return jsonify({"suggestions": suggestions.get(current_emotion, [])})
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    try:
+        data = request.get_json()
+        current_emotion = data.get('current_emotion', '')
+        
+        suggestions = {
+            'sadness': [
+                "Listen to uplifting music",
+                "Call a friend or family member", 
+                "Take a walk in nature",
+                "Practice gratitude by writing 3 good things"
+            ],
+            'anger': [
+                "Take 10 deep breaths",
+                "Do some physical exercise",
+                "Write down your feelings",
+                "Count to 10 slowly"
+            ],
+            'fear': [
+                "Practice grounding techniques (5-4-3-2-1 method)",
+                "Challenge negative thoughts",
+                "Talk to someone you trust",
+                "Focus on what you can control"
+            ],
+            'disgust': [
+                "Focus on positive aspects",
+                "Practice acceptance",
+                "Engage in a pleasant activity",
+                "Connect with supportive people"
+            ],
+            'neutral': [
+                "Set a small goal for today",
+                "Practice mindfulness",
+                "Try something new",
+                "Express gratitude"
+            ],
+            'joy': [
+                "Share your happiness with others",
+                "Savor the moment",
+                "Use this energy for creative activities",
+                "Help someone else"
+            ],
+            'surprise': [
+                "Reflect on what surprised you",
+                "Consider what you can learn",
+                "Share the experience",
+                "Embrace the unexpected"
+            ]
+        }
+        
+        return jsonify({"suggestions": suggestions.get(current_emotion, [])})
+    except Exception as e:
+        return jsonify({"error": f"Failed to get suggestions: {str(e)}"}), 500
 
 @app.route('/api/emotions/graph-data/<user_email>', methods=['GET'])
 def get_graph_data(user_email):
-    # Create simple graph data for visualization
-    nodes = [{'id': emotion, 'label': emotion.title()} for emotion in EMOTIONS]
-    
-    # Create edges based on common transitions
-    edges = []
-    common_transitions = [
-        ('sadness', 'neutral'), ('neutral', 'joy'),
-        ('anger', 'neutral'), ('fear', 'neutral'),
-        ('disgust', 'neutral'), ('surprise', 'joy')
-    ]
-    
-    for from_emotion, to_emotion in common_transitions:
-        edges.append({
-            'from': from_emotion,
-            'to': to_emotion,
-            'weight': 1
+    try:
+        # Create simple graph data for visualization
+        nodes = [{'id': emotion, 'label': emotion.title()} for emotion in EMOTIONS]
+        
+        # Create edges based on common transitions
+        edges = []
+        common_transitions = [
+            ('sadness', 'neutral'), ('neutral', 'joy'),
+            ('anger', 'neutral'), ('fear', 'neutral'),
+            ('disgust', 'neutral'), ('surprise', 'joy')
+        ]
+        
+        for from_emotion, to_emotion in common_transitions:
+            edges.append({
+                'from': from_emotion,
+                'to': to_emotion,
+                'weight': 1
+            })
+        
+        # Add user's emotional history
+        history = user_data.get(user_email, [])
+        
+        return jsonify({
+            'nodes': nodes,
+            'edges': edges,
+            'history': history[-10:]  # Last 10 entries
         })
-    
-    # Add user's emotional history
-    history = user_data.get(user_email, [])
-    
-    return jsonify({
-        'nodes': nodes,
-        'edges': edges,
-        'history': history[-10:]  # Last 10 entries
-    })
+    except Exception as e:
+        return jsonify({"error": f"Failed to get graph data: {str(e)}"}), 500
 
 @app.route('/api/test-algorithm', methods=['GET'])
 def test_algorithm():
     """Test endpoint to verify A* algorithm is working"""
-    test_results = []
-    
-    test_cases = [
-        ('sadness', 'joy'),
-        ('anger', 'neutral'),
-        ('fear', 'joy'),
-        ('disgust', 'neutral')
-    ]
-    
-    for start, goal in test_cases:
-        result = pathfinder.find_path(start, goal)
-        test_results.append({
-            'test': f"{start} -> {goal}",
-            'path': result['path'],
-            'cost': result['total_cost'],
-            'success_rate': result['estimated_success_rate']
+    try:
+        test_results = []
+        
+        test_cases = [
+            ('sadness', 'joy'),
+            ('anger', 'neutral'),
+            ('fear', 'joy'),
+            ('disgust', 'neutral'),
+            ('anger', 'joy'),
+            ('fear', 'surprise'),
+            ('sadness', 'surprise')
+        ]
+        
+        for start, goal in test_cases:
+            result = pathfinder.find_path(start, goal)
+            test_results.append({
+                'test': f"{start} -> {goal}",
+                'path': result['path'],
+                'cost': result['total_cost'],
+                'success_rate': result['estimated_success_rate'],
+                'steps': len(result['path']) - 1
+            })
+        
+        return jsonify({
+            "algorithm_tests": test_results,
+            "total_tests": len(test_cases),
+            "algorithm": "A* Search",
+            "average_success_rate": sum(t['success_rate'] for t in test_results) / len(test_results)
         })
-    
-    return jsonify({"algorithm_tests": test_results})
+    except Exception as e:
+        return jsonify({"error": f"Algorithm test failed: {str(e)}"}), 500
 
 if __name__ == '__main__':
     print("🧠 Starting Simple Reflectly AI Backend")
     print("🎯 Focus: Algorithm Development")
     print("📡 API: http://localhost:5000")
     print("🔬 Test endpoint: http://localhost:5000/api/test-algorithm")
+    print("✅ CORS enabled for http://localhost:3000")
     app.run(host='0.0.0.0', port=5000, debug=True)
