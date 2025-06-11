@@ -1,11 +1,11 @@
 import React from 'react';
-import SimpleAIDemo from './SimpleAIDemo';
+import IntelligentAgentApp from './IntelligentAgentApp';
 import './index.css';
 
 function App() {
   return (
     <div className="App">
-      <SimpleAIDemo />
+      <IntelligentAgentApp />
     </div>
   );
 }
