@@ -432,4 +432,4 @@ if __name__ == '__main__':
     print("🧠 Features: Emotion Analysis + A* Search + Learning")
     print("📡 API: http://localhost:5000")
     print("🗺️  Memory Map: Growing with each interaction")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5001, debug=True)

@@ -31,14 +31,34 @@ const IntelligentAgentApp = () => {
 
   const checkBackendStatus = async () => {
     try {
-      // Try direct connection first
-      let response = await fetch('http://localhost:5000/api/health');
-      let apiBase = 'http://localhost:5000/api';
+      // Try each possible port
+      const ports = [5000, 5001];
+      let response;
+      let apiBase;
       
-      if (!response.ok) {
-        // Try proxy
-        response = await fetch('/api/health');
-        apiBase = '/api';
+      for (const port of ports) {
+        try {
+          response = await fetch(`http://localhost:${port}/api/health`);
+          if (response.ok) {
+            apiBase = `http://localhost:${port}/api`;
+            console.log(`✅ Connected to backend on port ${port}`);
+            break;
+          }
+        } catch (err) {
+          console.log(`Backend not available on port ${port}`);
+        }
+      }
+      
+      // If direct connections fail, try proxy
+      if (!response || !response.ok) {
+        try {
+          response = await fetch('/api/health');
+          if (response.ok) {
+            apiBase = '/api';
+          }
+        } catch (err) {
+          console.log('Proxy connection failed');
+        }
       }
       
       if (response.ok) {
@@ -59,9 +79,10 @@ const IntelligentAgentApp = () => {
   };
 
   const makeApiCall = async (endpoint, options = {}) => {
-    // Try direct connection first, then proxy
+    // Try direct connection first (on both ports), then proxy
     const urls = [
       `http://localhost:5000/api${endpoint}`,
+      `http://localhost:5001/api${endpoint}`,
       `/api${endpoint}`
     ];
     
