@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import AlgorithmComparisonUI from './AlgorithmComparisonUI';
 
 const IntelligentAgentApp = () => {
   const [inputText, setInputText] = useState('');
@@ -10,6 +11,7 @@ const IntelligentAgentApp = () => {
   const [currentExperienceId, setCurrentExperienceId] = useState('');
   const [stepsInput, setStepsInput] = useState(['']);
   const [backendStatus, setBackendStatus] = useState('checking');
+  const [activeTab, setActiveTab] = useState('conversation'); // New state for tabs
 
   // Try proxy first, fallback to direct API
   const API_BASE = process.env.NODE_ENV === 'development' ? 'http://localhost:5000/api' : '/api';
@@ -341,9 +343,46 @@ const IntelligentAgentApp = () => {
         {status.icon} {status.text}
         {backendStatus === 'error' && (
           <div style={{fontSize: '12px', marginTop: '5px', fontWeight: 'normal'}}>
-            Make sure to run: ./start-agent.sh or python backend/intelligent_agent.py
+            Make sure to run: ./start.sh or python backend/intelligent_agent.py
           </div>
         )}
+      </div>
+    );
+  };
+
+  const renderTabButtons = () => {
+    const tabs = [
+      { id: 'conversation', label: '💬 Conversation & Memory', icon: '🧠' },
+      { id: 'algorithm', label: '🏁 Algorithm Comparison', icon: '⚡' }
+    ];
+
+    return (
+      <div style={{
+        display: 'flex',
+        justifyContent: 'center',
+        marginBottom: '20px',
+        borderBottom: '1px solid #e9ecef'
+      }}>
+        {tabs.map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            style={{
+              padding: '12px 24px',
+              border: 'none',
+              background: activeTab === tab.id ? '#007bff' : 'transparent',
+              color: activeTab === tab.id ? 'white' : '#666',
+              borderBottom: activeTab === tab.id ? '3px solid #007bff' : '3px solid transparent',
+              cursor: 'pointer',
+              fontSize: '14px',
+              fontWeight: activeTab === tab.id ? 'bold' : 'normal',
+              transition: 'all 0.2s ease',
+              borderRadius: '5px 5px 0 0'
+            }}
+          >
+            {tab.icon} {tab.label}
+          </button>
+        ))}
       </div>
     );
   };
@@ -473,8 +512,7 @@ const IntelligentAgentApp = () => {
             <div style={{ fontSize: '12px', color: '#999' }}>
               {backendStatus === 'error' ? 
                 '⚠️ Make sure to start the backend first!' : 
-                '✅ Ready to learn from your experiences!'
-              }
+                '✅ Ready to learn from your experiences!'}
             </div>
           </div>
         ) : (
@@ -503,6 +541,11 @@ const IntelligentAgentApp = () => {
                         <li key={i} style={{ marginBottom: '3px' }}>{suggestion}</li>
                       ))}
                     </ul>
+                  </div>
+                )}
+                {message.algorithm_used && (
+                  <div style={{ marginTop: '8px', fontSize: '12px', opacity: 0.8 }}>
+                    🔍 Used: {message.algorithm_used} algorithm
                   </div>
                 )}
               </div>
@@ -623,147 +666,159 @@ const IntelligentAgentApp = () => {
     );
   };
 
+  const renderConversationTab = () => (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '30px' }}>
+      {/* Left Side - Conversation */}
+      <div>
+        <h2 style={{ color: '#333', marginBottom: '15px' }}>💬 Conversation</h2>
+        
+        {renderConversation()}
+        
+        {/* Input Area */}
+        <div style={{ display: 'flex', gap: '10px' }}>
+          <input
+            type="text"
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            onKeyPress={(e) => e.key === 'Enter' && processInput()}
+            placeholder="Tell me how you're feeling... (e.g., 'I'm feeling really happy today' or 'I'm sad and stressed')"
+            style={{
+              flex: 1,
+              padding: '12px',
+              border: '1px solid #ddd',
+              borderRadius: '8px',
+              fontSize: '14px'
+            }}
+            disabled={backendStatus !== 'connected'}
+          />
+          <button
+            onClick={processInput}
+            disabled={loading || !inputText.trim() || backendStatus !== 'connected'}
+            style={{
+              padding: '12px 24px',
+              background: backendStatus === 'connected' ? '#007bff' : '#ccc',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '8px',
+              cursor: backendStatus === 'connected' ? 'pointer' : 'not-allowed',
+              fontWeight: 'bold'
+            }}
+          >
+            {loading ? '🤔' : '💭'}
+          </button>
+        </div>
+
+        {/* Example inputs */}
+        <div style={{ marginTop: '15px', fontSize: '12px', color: '#666' }}>
+          <strong>Try these examples:</strong>
+          <div style={{ marginTop: '5px' }}>
+            • "I'm feeling really happy and excited!"
+          </div>
+          <div>
+            • "I'm sad and don't know what to do"
+          </div>
+          <div>
+            • "I'm feeling anxious about work"
+          </div>
+        </div>
+      </div>
+
+      {/* Right Side - Memory Map */}
+      <div>
+        <h2 style={{ color: '#333', marginBottom: '15px' }}>🗺️ Memory Map</h2>
+        
+        {renderMemoryMap()}
+        
+        {/* Memory Stats */}
+        <div style={{
+          marginTop: '15px',
+          padding: '15px',
+          background: '#f8f9fa',
+          borderRadius: '8px',
+          border: '1px solid #e9ecef'
+        }}>
+          <h4 style={{ margin: '0 0 10px 0', color: '#333' }}>📊 Learning Stats</h4>
+          <div style={{ fontSize: '14px', color: '#666' }}>
+            <div>Total Experiences: <strong>{memoryStats.total_experiences || 0}</strong></div>
+            <div>Emotions Learned: <strong>{memoryStats.emotions_learned || 0}</strong></div>
+            <div>Transitions Learned: <strong>{memoryStats.transitions_learned || 0}</strong></div>
+            <div>Algorithm Comparisons: <strong>{memoryStats.algorithm_comparisons || 0}</strong></div>
+          </div>
+        </div>
+
+        {/* Legend */}
+        <div style={{
+          marginTop: '15px',
+          padding: '10px',
+          background: '#fff',
+          borderRadius: '8px',
+          border: '1px solid #ddd'
+        }}>
+          <h5 style={{ margin: '0 0 8px 0', color: '#333' }}>🎨 Map Legend</h5>
+          <div style={{ fontSize: '12px', color: '#666' }}>
+            <div>• Circle size = Number of experiences</div>
+            <div>• Line thickness = Number of learned transitions</div>
+            <div>• Numbers on lines = Available action suggestions</div>
+          </div>
+        </div>
+
+        {/* Reset Button */}
+        <button
+          onClick={resetMemory}
+          disabled={backendStatus !== 'connected'}
+          style={{
+            marginTop: '15px',
+            padding: '8px 16px',
+            background: backendStatus === 'connected' ? '#dc3545' : '#ccc',
+            color: '#fff',
+            border: 'none',
+            borderRadius: '6px',
+            cursor: backendStatus === 'connected' ? 'pointer' : 'not-allowed',
+            fontSize: '12px'
+          }}
+        >
+          🗑️ Reset Memory
+        </button>
+      </div>
+    </div>
+  );
+
   return (
     <div style={{ padding: '20px', maxWidth: '1200px', margin: '0 auto', fontFamily: 'Arial, sans-serif' }}>
       <h1 style={{ textAlign: 'center', color: '#333', marginBottom: '10px' }}>
-        🤖 Intelligent Agent with Memory Map
+        🤖 Intelligent Agent with Algorithm Comparison
       </h1>
       <p style={{ textAlign: 'center', color: '#666', marginBottom: '20px' }}>
-        An AI that learns from your experiences and uses A* search to suggest helpful actions
+        An AI that learns from your experiences and compares pathfinding algorithms for emotional guidance
       </p>
 
       {renderBackendStatus()}
+      {renderTabButtons()}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '30px' }}>
-        {/* Left Side - Conversation */}
-        <div>
-          <h2 style={{ color: '#333', marginBottom: '15px' }}>💬 Conversation</h2>
-          
-          {renderConversation()}
-          
-          {/* Input Area */}
-          <div style={{ display: 'flex', gap: '10px' }}>
-            <input
-              type="text"
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && processInput()}
-              placeholder="Tell me how you're feeling... (e.g., 'I'm feeling really happy today' or 'I'm sad and stressed')"
-              style={{
-                flex: 1,
-                padding: '12px',
-                border: '1px solid #ddd',
-                borderRadius: '8px',
-                fontSize: '14px'
-              }}
-              disabled={backendStatus !== 'connected'}
-            />
-            <button
-              onClick={processInput}
-              disabled={loading || !inputText.trim() || backendStatus !== 'connected'}
-              style={{
-                padding: '12px 24px',
-                background: backendStatus === 'connected' ? '#007bff' : '#ccc',
-                color: '#fff',
-                border: 'none',
-                borderRadius: '8px',
-                cursor: backendStatus === 'connected' ? 'pointer' : 'not-allowed',
-                fontWeight: 'bold'
-              }}
-            >
-              {loading ? '🤔' : '💭'}
-            </button>
-          </div>
+      {activeTab === 'conversation' && renderConversationTab()}
+      
+      {activeTab === 'algorithm' && (
+        <AlgorithmComparisonUI makeApiCall={makeApiCall} />
+      )}
 
-          {/* Example inputs */}
-          <div style={{ marginTop: '15px', fontSize: '12px', color: '#666' }}>
-            <strong>Try these examples:</strong>
-            <div style={{ marginTop: '5px' }}>
-              • "I'm feeling really happy and excited!"
-            </div>
-            <div>
-              • "I'm sad and don't know what to do"
-            </div>
-            <div>
-              • "I'm feeling anxious about work"
-            </div>
+      {/* How it Works - only show on conversation tab */}
+      {activeTab === 'conversation' && (
+        <div style={{
+          marginTop: '40px',
+          padding: '20px',
+          background: '#e8f5e8',
+          borderRadius: '10px',
+          border: '1px solid #c3e6c3'
+        }}>
+          <h3 style={{ color: '#2e7d32', marginTop: 0 }}>🧠 How the Intelligent Agent Works</h3>
+          <div style={{ color: '#1b5e20', lineHeight: 1.6 }}>
+            <p><strong>😊 When you share positive emotions:</strong> The agent asks what steps led to that feeling and saves them to its memory map.</p>
+            <p><strong>😢 When you share negative emotions:</strong> The agent compares A*, Bidirectional, and Dijkstra algorithms to suggest the best actions.</p>
+            <p><strong>🗺️ Memory Map Evolution:</strong> Each interaction builds the emotional graph, creating connections between emotions and successful actions.</p>
+            <p><strong>🏁 Algorithm Race:</strong> Use the Algorithm Comparison tab to test and compare pathfinding performance between emotional states.</p>
           </div>
         </div>
-
-        {/* Right Side - Memory Map */}
-        <div>
-          <h2 style={{ color: '#333', marginBottom: '15px' }}>🗺️ Memory Map</h2>
-          
-          {renderMemoryMap()}
-          
-          {/* Memory Stats */}
-          <div style={{
-            marginTop: '15px',
-            padding: '15px',
-            background: '#f8f9fa',
-            borderRadius: '8px',
-            border: '1px solid #e9ecef'
-          }}>
-            <h4 style={{ margin: '0 0 10px 0', color: '#333' }}>📊 Learning Stats</h4>
-            <div style={{ fontSize: '14px', color: '#666' }}>
-              <div>Total Experiences: <strong>{memoryStats.total_experiences || 0}</strong></div>
-              <div>Emotions Learned: <strong>{memoryStats.emotions_learned || 0}</strong></div>
-              <div>Transitions Learned: <strong>{memoryStats.transitions_learned || 0}</strong></div>
-            </div>
-          </div>
-
-          {/* Legend */}
-          <div style={{
-            marginTop: '15px',
-            padding: '10px',
-            background: '#fff',
-            borderRadius: '8px',
-            border: '1px solid #ddd'
-          }}>
-            <h5 style={{ margin: '0 0 8px 0', color: '#333' }}>🎨 Map Legend</h5>
-            <div style={{ fontSize: '12px', color: '#666' }}>
-              <div>• Circle size = Number of experiences</div>
-              <div>• Line thickness = Number of learned transitions</div>
-              <div>• Numbers on lines = Available action suggestions</div>
-            </div>
-          </div>
-
-          {/* Reset Button */}
-          <button
-            onClick={resetMemory}
-            disabled={backendStatus !== 'connected'}
-            style={{
-              marginTop: '15px',
-              padding: '8px 16px',
-              background: backendStatus === 'connected' ? '#dc3545' : '#ccc',
-              color: '#fff',
-              border: 'none',
-              borderRadius: '6px',
-              cursor: backendStatus === 'connected' ? 'pointer' : 'not-allowed',
-              fontSize: '12px'
-            }}
-          >
-            🗑️ Reset Memory
-          </button>
-        </div>
-      </div>
-
-      {/* How it Works */}
-      <div style={{
-        marginTop: '40px',
-        padding: '20px',
-        background: '#e8f5e8',
-        borderRadius: '10px',
-        border: '1px solid #c3e6c3'
-      }}>
-        <h3 style={{ color: '#2e7d32', marginTop: 0 }}>🧠 How the Intelligent Agent Works</h3>
-        <div style={{ color: '#1b5e20', lineHeight: 1.6 }}>
-          <p><strong>😊 When you share positive emotions:</strong> The agent asks what steps led to that feeling and saves them to its memory map.</p>
-          <p><strong>😢 When you share negative emotions:</strong> The agent uses A* search through its learned experiences to suggest actions that previously helped transition to positive emotions.</p>
-          <p><strong>🗺️ Memory Map Evolution:</strong> Each interaction builds the emotional graph, creating connections between emotions and the actions that successfully bridge them.</p>
-          <p><strong>🎯 A* Search:</strong> The algorithm finds optimal paths through emotional states, suggesting the most effective sequences of actions based on past successes.</p>
-        </div>
-      </div>
+      )}
 
       {renderStepsForm()}
     </div>
