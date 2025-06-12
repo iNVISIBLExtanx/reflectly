@@ -52,7 +52,10 @@ backend/
   admin_viewer.py
   app.py
   Dockerfile
+  intelligent_agent.py
   requirements.txt
+  simple_app.py
+  simple_requirements.txt
   start_backend.sh
   user_management.py
 docs/
@@ -90,6 +93,8 @@ frontend/
     App.js
     index.css
     index.js
+    IntelligentAgentApp.js
+    SimpleAIDemo.js
   Dockerfile
   package.json
 spark/
@@ -100,6 +105,8 @@ spark/
     path_finding.py
 .gitignore
 .repomixignore
+cleanup-all.sh
+cleanup-for-ai.sh
 copy_spark_jobs.sh
 docker-compose.yml
 README_BIGDATA.md
@@ -107,57 +114,18 @@ README.md
 repomix.config.json
 run_spark_jobs.sh
 start_reflectly.sh
+start-agent.sh
+start-ai-demo.sh
+start-backend.sh
+start-frontend.sh
+start-intelligent-agent.sh
+start-simple.sh
 stop_reflectly.sh
+test-backend.sh
+TROUBLESHOOTING.md
 ```
 
 # Files
-
-## File: .repomixignore
-````
-# Add patterns to ignore here, one per line
-# Example:
-# *.log
-# tmp/
-````
-
-## File: repomix.config.json
-````json
-{
-  "input": {
-    "maxFileSize": 52428800
-  },
-  "output": {
-    "filePath": "repomix-output.md",
-    "style": "markdown",
-    "parsableStyle": false,
-    "fileSummary": true,
-    "directoryStructure": true,
-    "files": true,
-    "removeComments": false,
-    "removeEmptyLines": false,
-    "compress": false,
-    "topFilesLength": 5,
-    "showLineNumbers": false,
-    "copyToClipboard": false,
-    "git": {
-      "sortByChanges": true,
-      "sortByChangesMaxCommits": 100
-    }
-  },
-  "include": [],
-  "ignore": {
-    "useGitignore": true,
-    "useDefaultPatterns": true,
-    "customPatterns": []
-  },
-  "security": {
-    "enableSecurityCheck": true
-  },
-  "tokenCount": {
-    "encoding": "o200k_base"
-  }
-}
-````
 
 ## File: backend/models/emotional_graph_bigdata.py
 ````python
@@ -2533,6 +2501,457 @@ def index():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5003, debug=True)
+````
+
+## File: backend/intelligent_agent.py
+````python
+"""
+Intelligent Agent with Memory Map and A* Search
+Learns from user experiences and suggests actions based on past successful transitions
+"""
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import json
+import datetime
+import re
+import heapq
+from collections import defaultdict
+import uuid
+
+app = Flask(__name__)
+CORS(app, resources={
+    r"/api/*": {
+        "origins": ["http://localhost:3000", "http://127.0.0.1:3000"],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"]
+    }
+})
+
+# In-memory storage for the evolving memory map
+memory_map = {
+    "emotional_states": {},  # emotion -> list of experiences
+    "transitions": {},       # (from_emotion, to_emotion) -> list of successful actions
+    "user_experiences": [],  # chronological list of all experiences
+    "graph_connections": defaultdict(list)  # emotion -> list of connected emotions
+}
+
+class EmotionAnalyzer:
+    """Analyzes text to detect emotions"""
+    
+    def __init__(self):
+        self.emotion_keywords = {
+            'happy': ['happy', 'joyful', 'excited', 'glad', 'cheerful', 'delighted', 'elated', 'thrilled', 'content', 'pleased', 'amazing', 'wonderful', 'fantastic', 'great', 'awesome', 'love', 'perfect'],
+            'sad': ['sad', 'depressed', 'down', 'upset', 'miserable', 'gloomy', 'disappointed', 'heartbroken', 'crying', 'tears', 'lonely', 'hurt', 'devastated'],
+            'anxious': ['anxious', 'worried', 'nervous', 'stressed', 'overwhelmed', 'panic', 'fear', 'scared', 'afraid', 'concerned', 'uneasy', 'tense'],
+            'angry': ['angry', 'furious', 'mad', 'irritated', 'annoyed', 'frustrated', 'rage', 'livid', 'outraged', 'hostile'],
+            'confused': ['confused', 'lost', 'uncertain', 'unclear', 'puzzled', 'bewildered', 'perplexed'],
+            'tired': ['tired', 'exhausted', 'drained', 'weary', 'fatigued', 'worn out'],
+            'neutral': ['okay', 'fine', 'normal', 'average', 'regular']
+        }
+        
+        # Define positive and negative emotions
+        self.positive_emotions = ['happy']
+        self.negative_emotions = ['sad', 'anxious', 'angry', 'confused', 'tired']
+        self.neutral_emotions = ['neutral']
+    
+    def analyze(self, text):
+        """Analyze emotion in text"""
+        text_lower = text.lower()
+        scores = {}
+        
+        # Calculate scores for each emotion
+        for emotion, keywords in self.emotion_keywords.items():
+            score = sum(1 for keyword in keywords if keyword in text_lower)
+            scores[emotion] = score
+        
+        # Find primary emotion
+        if not any(scores.values()):
+            primary_emotion = 'neutral'
+            confidence = 0.5
+        else:
+            primary_emotion = max(scores, key=scores.get)
+            total_score = sum(scores.values())
+            confidence = scores[primary_emotion] / total_score if total_score > 0 else 0.5
+        
+        # Determine emotion type
+        if primary_emotion in self.positive_emotions:
+            emotion_type = 'positive'
+        elif primary_emotion in self.negative_emotions:
+            emotion_type = 'negative'
+        else:
+            emotion_type = 'neutral'
+        
+        return {
+            'primary_emotion': primary_emotion,
+            'emotion_type': emotion_type,
+            'confidence': confidence,
+            'all_scores': scores
+        }
+
+class IntelligentAgent:
+    """Intelligent agent that learns and suggests actions using A* search"""
+    
+    def __init__(self):
+        self.emotion_analyzer = EmotionAnalyzer()
+        
+    def process_input(self, text, user_id="default_user"):
+        """Process user input and determine appropriate response"""
+        # Analyze emotion
+        emotion_analysis = self.emotion_analyzer.analyze(text)
+        primary_emotion = emotion_analysis['primary_emotion']
+        emotion_type = emotion_analysis['emotion_type']
+        
+        # Create experience record
+        experience = {
+            'id': str(uuid.uuid4()),
+            'user_id': user_id,
+            'text': text,
+            'emotion': primary_emotion,
+            'emotion_type': emotion_type,
+            'confidence': emotion_analysis['confidence'],
+            'timestamp': datetime.datetime.now().isoformat(),
+            'all_scores': emotion_analysis['all_scores']
+        }
+        
+        # Store experience
+        memory_map["user_experiences"].append(experience)
+        
+        # Add to emotional states
+        if primary_emotion not in memory_map["emotional_states"]:
+            memory_map["emotional_states"][primary_emotion] = []
+        memory_map["emotional_states"][primary_emotion].append(experience)
+        
+        # Determine response based on emotion type
+        if emotion_type == 'positive':
+            return self._handle_positive_emotion(experience)
+        elif emotion_type == 'negative':
+            return self._handle_negative_emotion(experience)
+        else:
+            return self._handle_neutral_emotion(experience)
+    
+    def _handle_positive_emotion(self, experience):
+        """Handle positive emotions - ask for steps taken"""
+        return {
+            'type': 'ask_for_steps',
+            'message': f"That's wonderful! I can see you're feeling {experience['emotion']}. What steps or actions led to this positive feeling? This will help me learn and suggest similar actions to others in the future.",
+            'experience_id': experience['id'],
+            'emotion': experience['emotion'],
+            'suggestions': []
+        }
+    
+    def _handle_negative_emotion(self, experience):
+        """Handle negative emotions - suggest actions using A* search"""
+        suggestions = self._find_suggestions_using_astar(experience['emotion'])
+        
+        return {
+            'type': 'suggest_actions',
+            'message': f"I understand you're feeling {experience['emotion']}. Based on past successful experiences, here are some suggestions that might help:",
+            'experience_id': experience['id'],
+            'emotion': experience['emotion'],
+            'suggestions': suggestions
+        }
+    
+    def _handle_neutral_emotion(self, experience):
+        """Handle neutral emotions - provide general guidance"""
+        return {
+            'type': 'general_guidance',
+            'message': f"I see you're feeling {experience['emotion']}. Would you like some suggestions to improve your mood, or would you prefer to share what's on your mind?",
+            'experience_id': experience['id'],
+            'emotion': experience['emotion'],
+            'suggestions': [
+                "Try engaging in a hobby you enjoy",
+                "Take a short walk or do light exercise",
+                "Connect with a friend or family member",
+                "Practice gratitude by listing three good things in your life"
+            ]
+        }
+    
+    def _find_suggestions_using_astar(self, current_emotion):
+        """Use A* search to find best actions from memory map"""
+        # Get all successful transitions from this emotion to positive emotions
+        successful_actions = []
+        
+        # Search for direct transitions to positive emotions
+        for transition_key, actions in memory_map["transitions"].items():
+            from_emotion, to_emotion = transition_key
+            if (from_emotion == current_emotion and 
+                to_emotion in self.emotion_analyzer.positive_emotions):
+                successful_actions.extend(actions)
+        
+        # If no direct transitions, use A* to find path through intermediate emotions
+        if not successful_actions:
+            successful_actions = self._astar_search_for_actions(current_emotion)
+        
+        # If still no actions, provide default suggestions
+        if not successful_actions:
+            successful_actions = self._get_default_suggestions(current_emotion)
+        
+        # Return top 3 most successful actions
+        return successful_actions[:3]
+    
+    def _astar_search_for_actions(self, start_emotion):
+        """A* search through emotion graph to find actions leading to positive emotions"""
+        target_emotions = self.emotion_analyzer.positive_emotions
+        
+        # Priority queue: (cost, emotion, path, actions)
+        open_set = [(0, start_emotion, [start_emotion], [])]
+        closed_set = set()
+        
+        while open_set:
+            cost, current_emotion, path, actions = heapq.heappop(open_set)
+            
+            if current_emotion in closed_set:
+                continue
+            
+            closed_set.add(current_emotion)
+            
+            # Check if we reached a target emotion
+            if current_emotion in target_emotions:
+                return actions
+            
+            # Explore neighbors
+            for next_emotion in memory_map["graph_connections"][current_emotion]:
+                if next_emotion not in closed_set:
+                    transition_key = (current_emotion, next_emotion)
+                    if transition_key in memory_map["transitions"]:
+                        transition_actions = memory_map["transitions"][transition_key]
+                        new_cost = cost + 1  # Simple cost function
+                        new_path = path + [next_emotion]
+                        new_actions = actions + transition_actions[:1]  # Take best action
+                        
+                        heapq.heappush(open_set, (new_cost, next_emotion, new_path, new_actions))
+        
+        return []  # No path found
+    
+    def _get_default_suggestions(self, emotion):
+        """Get default suggestions if no learned actions exist"""
+        defaults = {
+            'sad': [
+                "Listen to uplifting music",
+                "Call a friend or family member",
+                "Take a warm bath or shower"
+            ],
+            'anxious': [
+                "Practice deep breathing exercises",
+                "Try the 5-4-3-2-1 grounding technique",
+                "Go for a short walk"
+            ],
+            'angry': [
+                "Count to 10 slowly",
+                "Write down your feelings",
+                "Do some physical exercise"
+            ],
+            'confused': [
+                "Break down the problem into smaller parts",
+                "Talk to someone you trust",
+                "Take some time to reflect"
+            ],
+            'tired': [
+                "Take a short nap if possible",
+                "Drink some water",
+                "Get some fresh air"
+            ]
+        }
+        return defaults.get(emotion, ["Take a moment to breathe and be kind to yourself"])
+    
+    def save_successful_steps(self, experience_id, steps):
+        """Save steps that led to positive emotion"""
+        # Find the experience
+        experience = None
+        for exp in memory_map["user_experiences"]:
+            if exp['id'] == experience_id:
+                experience = exp
+                break
+        
+        if not experience:
+            return False
+        
+        # Get previous negative emotion if exists
+        prev_emotion = self._get_previous_emotion(experience)
+        current_emotion = experience['emotion']
+        
+        # Create transition record
+        if prev_emotion and prev_emotion != current_emotion:
+            transition_key = (prev_emotion, current_emotion)
+            if transition_key not in memory_map["transitions"]:
+                memory_map["transitions"][transition_key] = []
+            
+            # Add each step as an action
+            for step in steps:
+                action_record = {
+                    'action': step,
+                    'success_count': 1,
+                    'timestamp': datetime.datetime.now().isoformat(),
+                    'experience_id': experience_id
+                }
+                memory_map["transitions"][transition_key].append(action_record)
+            
+            # Update graph connections
+            memory_map["graph_connections"][prev_emotion].append(current_emotion)
+        
+        # Also store steps directly with the positive emotion
+        experience['successful_steps'] = steps
+        
+        return True
+    
+    def _get_previous_emotion(self, current_experience):
+        """Find the most recent different emotion before current experience"""
+        current_time = datetime.datetime.fromisoformat(current_experience['timestamp'])
+        
+        for exp in reversed(memory_map["user_experiences"]):
+            exp_time = datetime.datetime.fromisoformat(exp['timestamp'])
+            if (exp_time < current_time and 
+                exp['emotion'] != current_experience['emotion'] and
+                exp['user_id'] == current_experience['user_id']):
+                return exp['emotion']
+        
+        return None
+    
+    def get_memory_map_data(self):
+        """Get current memory map for visualization"""
+        # Create nodes and edges for visualization
+        nodes = []
+        edges = []
+        
+        # Create nodes for each emotion with experience count
+        for emotion, experiences in memory_map["emotional_states"].items():
+            nodes.append({
+                'id': emotion,
+                'label': emotion.title(),
+                'count': len(experiences),
+                'type': 'positive' if emotion in self.emotion_analyzer.positive_emotions else 
+                       'negative' if emotion in self.emotion_analyzer.negative_emotions else 'neutral'
+            })
+        
+        # Create edges for transitions
+        for (from_emotion, to_emotion), actions in memory_map["transitions"].items():
+            edges.append({
+                'from': from_emotion,
+                'to': to_emotion,
+                'actions': len(actions),
+                'weight': len(actions)  # Thicker lines for more learned transitions
+            })
+        
+        return {
+            'nodes': nodes,
+            'edges': edges,
+            'total_experiences': len(memory_map["user_experiences"]),
+            'total_transitions': len(memory_map["transitions"])
+        }
+
+# Initialize the intelligent agent
+agent = IntelligentAgent()
+
+# API Routes
+@app.route('/api/health', methods=['GET'])
+def health():
+    return jsonify({
+        "status": "healthy",
+        "service": "Intelligent Agent with Memory Map",
+        "memory_stats": {
+            "total_experiences": len(memory_map["user_experiences"]),
+            "emotional_states": len(memory_map["emotional_states"]),
+            "learned_transitions": len(memory_map["transitions"])
+        }
+    })
+
+@app.route('/api/process-input', methods=['POST', 'OPTIONS'])
+def process_input():
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        data = request.get_json()
+        text = data.get('text', '')
+        user_id = data.get('user_id', 'default_user')
+        
+        if not text.strip():
+            return jsonify({"error": "Text input is required"}), 400
+        
+        # Process input through intelligent agent
+        response = agent.process_input(text, user_id)
+        
+        return jsonify(response)
+    except Exception as e:
+        return jsonify({"error": f"Failed to process input: {str(e)}"}), 500
+
+@app.route('/api/save-steps', methods=['POST', 'OPTIONS'])
+def save_steps():
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        data = request.get_json()
+        experience_id = data.get('experience_id', '')
+        steps = data.get('steps', [])
+        
+        if not experience_id or not steps:
+            return jsonify({"error": "Experience ID and steps are required"}), 400
+        
+        # Save steps through intelligent agent
+        success = agent.save_successful_steps(experience_id, steps)
+        
+        if success:
+            return jsonify({
+                "message": "Steps saved successfully! I'll remember these for future suggestions.",
+                "saved_steps": steps
+            })
+        else:
+            return jsonify({"error": "Failed to save steps"}), 400
+            
+    except Exception as e:
+        return jsonify({"error": f"Failed to save steps: {str(e)}"}), 500
+
+@app.route('/api/memory-map', methods=['GET'])
+def get_memory_map():
+    try:
+        map_data = agent.get_memory_map_data()
+        return jsonify(map_data)
+    except Exception as e:
+        return jsonify({"error": f"Failed to get memory map: {str(e)}"}), 500
+
+@app.route('/api/memory-stats', methods=['GET'])
+def get_memory_stats():
+    try:
+        stats = {
+            "total_experiences": len(memory_map["user_experiences"]),
+            "emotions_learned": len(memory_map["emotional_states"]),
+            "transitions_learned": len(memory_map["transitions"]),
+            "recent_experiences": memory_map["user_experiences"][-5:] if memory_map["user_experiences"] else []
+        }
+        return jsonify(stats)
+    except Exception as e:
+        return jsonify({"error": f"Failed to get stats: {str(e)}"}), 500
+
+@app.route('/api/reset-memory', methods=['POST', 'OPTIONS'])
+def reset_memory():
+    if request.method == 'OPTIONS':
+        return '', 200
+    
+    try:
+        # Reset the memory map
+        memory_map["emotional_states"].clear()
+        memory_map["transitions"].clear()
+        memory_map["user_experiences"].clear()
+        memory_map["graph_connections"].clear()
+        
+        return jsonify({"message": "Memory map reset successfully"})
+    except Exception as e:
+        return jsonify({"error": f"Failed to reset memory: {str(e)}"}), 500
+
+if __name__ == '__main__':
+    print("🤖 Starting Intelligent Agent with Memory Map")
+    print("🧠 Features: Emotion Analysis + A* Search + Learning")
+    print("📡 API: http://localhost:5000")
+    print("🗺️  Memory Map: Growing with each interaction")
+    app.run(host='0.0.0.0', port=5000, debug=True)
+````
+
+## File: backend/simple_requirements.txt
+````
+# Minimal requirements for algorithm development
+Flask==2.3.3
+Flask-CORS==4.0.0
 ````
 
 ## File: backend/start_backend.sh
@@ -5793,34 +6212,6 @@ Reflectly is a sophisticated journaling application that combines modern web tec
 The modular design of both frontend and backend components allows for independent development and testing, while the containerized deployment ensures consistency across different environments.
 ````
 
-## File: frontend/public/index.html
-````html
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#000000" />
-    <meta
-      name="description"
-      content="Reflectly - A personal journaling app for meaningful self-reflection"
-    />
-    <link rel="apple-touch-icon" href="%PUBLIC_URL%/logo192.png" />
-    <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700&display=swap"
-    />
-    <title>Reflectly - Personal Journaling</title>
-  </head>
-  <body>
-    <noscript>You need to enable JavaScript to run this app.</noscript>
-    <div id="root"></div>
-  </body>
-</html>
-````
-
 ## File: frontend/public/manifest.json
 ````json
 {
@@ -6131,168 +6522,6 @@ export const ThemeProvider = ({ children }) => {
 };
 
 export default ThemeContext;
-````
-
-## File: frontend/src/pages/EmotionalJourneyGraph.js
-````javascript
-import React, { useState, useEffect } from 'react';
-import { Box, Typography, Paper, CircularProgress, Button } from '@mui/material';
-import axios from '../utils/axiosConfig';
-
-const EmotionalJourneyGraph = () => {
-  const [loading, setLoading] = useState(true);
-  const [graphData, setGraphData] = useState(null);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    const fetchEmotionalJourneyData = async () => {
-      try {
-        setLoading(true);
-        const response = await axios.get('/api/emotional-journey');
-        setGraphData(response.data);
-        setLoading(false);
-      } catch (err) {
-        console.error('Error fetching emotional journey data:', err);
-        setError('Failed to load emotional journey data. Please try again later.');
-        setLoading(false);
-      }
-    };
-
-    fetchEmotionalJourneyData();
-  }, []);
-
-  const renderGraph = () => {
-    if (!graphData || !graphData.nodes || !graphData.edges) {
-      return (
-        <Box sx={{ textAlign: 'center', my: 4 }}>
-          <Typography variant="body1" color="text.secondary">
-            No emotional journey data available. Start journaling to see your emotional path.
-          </Typography>
-        </Box>
-      );
-    }
-
-    // This is a simplified visualization - in a real implementation,
-    // you would use a graph visualization library like D3.js or react-force-graph
-    return (
-      <Box sx={{ p: 2 }}>
-        <Typography variant="h6" gutterBottom>
-          Your Emotional States
-        </Typography>
-        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2, my: 2 }}>
-          {graphData.nodes.map((node) => (
-            <Paper
-              key={node.id}
-              elevation={3}
-              sx={{
-                p: 2,
-                borderRadius: 2,
-                bgcolor: getEmotionColor(node.emotion),
-                color: '#fff',
-                minWidth: 100,
-                textAlign: 'center'
-              }}
-            >
-              <Typography variant="subtitle1">{node.emotion}</Typography>
-              <Typography variant="caption">
-                {new Date(node.timestamp).toLocaleDateString()}
-              </Typography>
-            </Paper>
-          ))}
-        </Box>
-
-        <Typography variant="h6" gutterBottom sx={{ mt: 4 }}>
-          Recommended Path to Positive Emotions
-        </Typography>
-        {graphData.optimalPath && graphData.optimalPath.length > 0 ? (
-          <Box sx={{ display: 'flex', alignItems: 'center', overflowX: 'auto', py: 2 }}>
-            {graphData.optimalPath.map((state, index) => (
-              <React.Fragment key={index}>
-                <Paper
-                  elevation={3}
-                  sx={{
-                    p: 2,
-                    borderRadius: 2,
-                    bgcolor: getEmotionColor(state),
-                    color: '#fff',
-                    minWidth: 100,
-                    textAlign: 'center'
-                  }}
-                >
-                  <Typography variant="subtitle1">{state}</Typography>
-                </Paper>
-                {index < graphData.optimalPath.length - 1 && (
-                  <Box sx={{ mx: 1, color: 'text.secondary' }}>→</Box>
-                )}
-              </React.Fragment>
-            ))}
-          </Box>
-        ) : (
-          <Typography variant="body2" color="text.secondary">
-            No optimal path available yet.
-          </Typography>
-        )}
-      </Box>
-    );
-  };
-
-  // Helper function to get color based on emotion
-  const getEmotionColor = (emotion) => {
-    const emotionColors = {
-      happy: '#4CAF50',
-      sad: '#2196F3',
-      angry: '#F44336',
-      anxious: '#FF9800',
-      neutral: '#9E9E9E',
-      excited: '#8BC34A',
-      calm: '#03A9F4',
-      frustrated: '#E91E63',
-      content: '#009688',
-      worried: '#FFC107'
-    };
-
-    return emotionColors[emotion.toLowerCase()] || '#9E9E9E';
-  };
-
-  if (loading) {
-    return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', my: 4 }}>
-        <CircularProgress />
-      </Box>
-    );
-  }
-
-  if (error) {
-    return (
-      <Box sx={{ textAlign: 'center', my: 4 }}>
-        <Typography variant="body1" color="error" gutterBottom>
-          {error}
-        </Typography>
-        <Button
-          variant="contained"
-          onClick={() => window.location.reload()}
-          sx={{ mt: 2 }}
-        >
-          Try Again
-        </Button>
-      </Box>
-    );
-  }
-
-  return (
-    <Paper elevation={2} sx={{ p: 3, borderRadius: 2 }}>
-      <Typography variant="h5" gutterBottom>
-        Your Emotional Journey
-      </Typography>
-      <Typography variant="body2" color="text.secondary" paragraph>
-        This graph visualizes your emotional states over time and shows the optimal path to reach positive emotions based on your personal history.
-      </Typography>
-      {renderGraph()}
-    </Paper>
-  );
-};
-
-export default EmotionalJourneyGraph;
 ````
 
 ## File: frontend/src/pages/Goals.js
@@ -8560,84 +8789,6 @@ axios.defaults.baseURL = 'http://localhost:5002';
 export default axios;
 ````
 
-## File: frontend/src/index.js
-````javascript
-import React from 'react';
-import ReactDOM from 'react-dom/client';
-import './index.css';
-import App from './App';
-import { AuthProvider } from './context/AuthContext';
-import { ThemeProvider } from './context/ThemeContext';
-import { BrowserRouter } from 'react-router-dom';
-
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(
-  <React.StrictMode>
-    <BrowserRouter>
-      <ThemeProvider>
-        <AuthProvider>
-          <App />
-        </AuthProvider>
-      </ThemeProvider>
-    </BrowserRouter>
-  </React.StrictMode>
-);
-````
-
-## File: frontend/package.json
-````json
-{
-  "name": "reflectly",
-  "version": "0.1.0",
-  "private": true,
-  "dependencies": {
-    "@emotion/react": "^11.9.0",
-    "@emotion/styled": "^11.8.1",
-    "@mui/icons-material": "^5.6.2",
-    "@mui/lab": "^5.0.0-alpha.78",
-    "@mui/material": "^5.6.2",
-    "@mui/x-date-pickers": "^7.27.3",
-    "@testing-library/jest-dom": "^5.16.4",
-    "@testing-library/react": "^13.1.1",
-    "@testing-library/user-event": "^13.5.0",
-    "axios": "^0.26.1",
-    "chart.js": "^3.7.1",
-    "date-fns": "^2.30.0",
-    "jwt-decode": "^3.1.2",
-    "react": "^18.0.0",
-    "react-chartjs-2": "^4.1.0",
-    "react-dom": "^18.0.0",
-    "react-router-dom": "^6.3.0",
-    "react-scripts": "5.0.1",
-    "web-vitals": "^2.1.4"
-  },
-  "scripts": {
-    "start": "react-scripts start",
-    "build": "react-scripts build",
-    "test": "react-scripts test",
-    "eject": "react-scripts eject"
-  },
-  "eslintConfig": {
-    "extends": [
-      "react-app",
-      "react-app/jest"
-    ]
-  },
-  "browserslist": {
-    "production": [
-      ">0.2%",
-      "not dead",
-      "not op_mini all"
-    ],
-    "development": [
-      "last 1 chrome version",
-      "last 1 firefox version",
-      "last 1 safari version"
-    ]
-  }
-}
-````
-
 ## File: spark/jobs/dataset_import.py
 ````python
 """
@@ -9941,6 +10092,260 @@ logs/
 *.log
 ````
 
+## File: .repomixignore
+````
+# Add patterns to ignore here, one per line
+# Example:
+# *.log
+# tmp/
+````
+
+## File: cleanup-all.sh
+````bash
+#!/bin/bash
+
+echo "🧹 Cleaning up unnecessary files for simple AI-focused setup..."
+echo "============================================================"
+
+# Remove complex backend models (keep only simple_app.py)
+echo "Removing complex backend models..."
+rm -f backend/models/emotional_graph.py
+rm -f backend/models/emotional_graph_bigdata.py
+rm -f backend/models/emotion_analyzer.py
+rm -f backend/models/memory_manager.py
+rm -f backend/models/goal_tracker.py
+rm -f backend/models/response_generator.py
+rm -f backend/models/search_algorithm.py
+rm -rf backend/models/
+
+# Remove all services
+echo "Removing backend services..."
+rm -rf backend/services/
+
+# Remove complex backend files
+echo "Removing complex backend files..."
+rm -f backend/app.py  # Keep only simple_app.py
+rm -f backend/requirements.txt  # Keep only simple_requirements.txt
+rm -f backend/user_management.py
+rm -f backend/admin_viewer.py
+rm -f backend/start_backend.sh
+rm -f backend/Dockerfile
+
+# Remove all Spark components
+echo "Removing Spark components..."
+rm -rf spark/
+rm -f run_spark_jobs.sh
+rm -f copy_spark_jobs.sh
+
+# Remove complex frontend components (keep only SimpleAIDemo.js and App.js)
+echo "Removing complex frontend components..."
+rm -f frontend/src/pages/EmotionalJourneyGraph.js
+rm -f frontend/src/pages/Goals.js
+rm -f frontend/src/pages/Home.js
+rm -f frontend/src/pages/Journal.js
+rm -f frontend/src/pages/Login.js
+rm -f frontend/src/pages/Memories.js
+rm -f frontend/src/pages/NotFound.js
+rm -f frontend/src/pages/Profile.js
+rm -f frontend/src/pages/Register.js
+rm -rf frontend/src/pages/
+
+rm -rf frontend/src/components/
+rm -rf frontend/src/context/
+rm -rf frontend/src/utils/
+
+# Remove Docker files
+echo "Removing Docker configurations..."
+rm -f backend/Dockerfile
+rm -f frontend/Dockerfile
+
+# Remove complex documentation
+echo "Removing complex documentation..."
+rm -f README_BIGDATA.md
+rm -f docs/context.md
+rm -f docs/contextV2.md
+rm -f docs/contextV3.md
+rm -f docs/technical_documentation_V2.md
+rm -f docs/technical_documentation.md
+rm -rf docs/
+
+# Remove unnecessary scripts
+echo "Removing unnecessary scripts..."
+rm -f start_reflectly.sh
+rm -f stop_reflectly.sh
+rm -f start-ai-demo.sh
+rm -f cleanup-for-ai.sh
+
+# Remove repomix files
+echo "Removing repomix files..."
+rm -f repomix-output.md
+rm -f .repomixignore
+rm -f repomix.config.json
+
+# Create a simple .gitignore for the simplified project
+echo "Creating simple .gitignore..."
+cat > .gitignore << 'EOF'
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.env
+venv/
+env/
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# OS
+Thumbs.db
+EOF
+
+echo ""
+echo "✅ Cleanup complete!"
+echo ""
+echo "📁 Remaining files:"
+echo "├── backend/"
+echo "│   ├── simple_app.py           # 🧠 Complete AI backend"
+echo "│   └── simple_requirements.txt # 📦 Minimal dependencies"
+echo "├── frontend/"
+echo "│   ├── src/"
+echo "│   │   ├── SimpleAIDemo.js     # 🎨 Complete demo interface"
+echo "│   │   ├── App.js              # ⚛️ Simple wrapper"
+echo "│   │   └── index.js            # ⚛️ React entry point"
+echo "│   └── package.json            # 📦 React dependencies"
+echo "├── start-simple.sh             # 🚀 One-command startup"
+echo "├── start-backend.sh            # 🐍 Backend only"
+echo "├── start-frontend.sh           # ⚛️ Frontend only"
+echo "└── README.md                   # 📖 Simple setup guide"
+echo ""
+echo "🎯 Ready for algorithm development!"
+echo "🚀 Run: ./start-simple.sh"
+````
+
+## File: cleanup-for-ai.sh
+````bash
+#!/bin/bash
+
+# Cleanup script for AI-focused Reflectly
+# Removes big data components and unnecessary files
+
+echo "🧹 Cleaning up AI-focused Reflectly repository..."
+
+# Remove big data services
+echo "Removing big data services..."
+rm -rf backend/services/
+
+# Remove Spark jobs
+echo "Removing Spark components..."
+rm -rf spark/
+rm -f run_spark_jobs.sh
+rm -f copy_spark_jobs.sh
+
+# Remove big data documentation
+echo "Removing big data documentation..."
+rm -f README_BIGDATA.md
+
+# Remove big data models
+echo "Removing big data models..."
+rm -f backend/models/emotional_graph_bigdata.py
+
+# Remove unused scripts
+echo "Removing deployment scripts..."
+rm -f start_reflectly.sh
+rm -f stop_reflectly.sh
+
+# Remove goal tracker (not AI-focused)
+echo "Removing non-AI components..."
+rm -f backend/models/goal_tracker.py
+
+# Remove admin viewer (not essential for AI demo)
+rm -f backend/admin_viewer.py
+rm -f backend/user_management.py
+
+# Remove Docker files for big data services
+echo "Cleaning up Docker configurations..."
+# Note: We've already replaced docker-compose.yml with simplified version
+
+# Keep only essential Dockerfiles
+echo "Keeping only essential Docker configurations..."
+
+# Clean up frontend - remove non-AI pages
+echo "Cleaning up frontend..."
+rm -f frontend/src/pages/Goals.js
+rm -f frontend/src/pages/Profile.js
+rm -f frontend/src/pages/Memories.js
+
+# Update gitignore for AI-focused development
+echo "Updating .gitignore..."
+cat >> .gitignore << EOF
+
+# AI-focused development
+*.pyc
+__pycache__/
+.pytest_cache/
+*.log
+
+# Node modules
+node_modules/
+npm-debug.log*
+
+# Environment variables
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# AI models (if downloaded locally)
+models/
+*.bin
+*.safetensors
+
+EOF
+
+echo "✅ Cleanup complete!"
+echo ""
+echo "🎯 AI-focused Reflectly is ready!"
+echo ""
+echo "Core AI components kept:"
+echo "  ✅ A* search algorithm (backend/models/search_algorithm.py)"
+echo "  ✅ Emotional graph (backend/models/emotional_graph.py)"
+echo "  ✅ Emotion analyzer (backend/models/emotion_analyzer.py)"
+echo "  ✅ Memory manager (backend/models/memory_manager.py)"
+echo "  ✅ AI-focused Flask API (backend/app.py)"
+echo "  ✅ Emotional journey visualization (frontend/src/pages/EmotionalJourneyGraph.js)"
+echo ""
+echo "Removed components:"
+echo "  ❌ Kafka streaming service"
+echo "  ❌ Spark distributed computing"
+echo "  ❌ HDFS storage service"
+echo "  ❌ Big data orchestration"
+echo "  ❌ Goal tracking system"
+echo "  ❌ User management complexity"
+echo ""
+echo "🚀 Next steps:"
+echo "  1. Run: docker-compose up -d"
+echo "  2. Open: http://localhost:3000"
+echo "  3. Test AI pathfinding endpoints"
+````
+
 ## File: copy_spark_jobs.sh
 ````bash
 #!/bin/bash
@@ -10120,121 +10525,43 @@ docker exec -it namenode hdfs namenode -format
 4. Develop more personalized recommendations based on emotional transitions
 ````
 
-## File: README.md
-````markdown
-# Reflectly - Personal Journaling Application
-
-Reflectly is a comprehensive personal journaling application designed to help users engage in meaningful self-reflection through a conversational interface. The app combines the familiarity of a chat interface with the emotional intelligence of a personal journal, fostering self-awareness and growth.
-
-## Key Features
-
-1. **Conversational Journaling Interface**
-   - Chat-like UI where users can type or speak their thoughts
-   - AI-powered responses with emotion-aware interactions
-
-2. **Emotion Tracking and Support System**
-   - Dual-path emotional processing (Happy and Support flows)
-   - Advanced emotion detection using BERT and RoBERTa
-
-3. **Goal Setting and Progress Analysis**
-   - Set personal goals and track progress
-   - Progress charts and milestone celebrations
-
-4. **Memory Management System**
-   - Multi-tier storage for journal entries and emotions
-   - Intelligent retrieval of past positive experiences
-
-## Tech Stack
-
-### Frontend
-- React.js with Material-UI
-- Context API for state management
-- Responsive design for all devices
-
-### Backend
-- Python/Flask for RESTful services
-- MongoDB for primary storage
-- Redis for caching
-- Kafka for message streaming
-
-### AI/ML Components
-- BERT for sentiment analysis
-- GPT for response generation
-
-### Deployment
-- Docker containers for all services
-
-## Getting Started
-
-### Prerequisites
-- Docker and Docker Compose installed on your machine
-
-### Installation and Setup
-
-1. Clone the repository:
-   ```
-   git clone <repository-url>
-   cd Refection
-   ```
-
-2. Start the application using Docker Compose:
-   ```
-   docker-compose up
-   ```
-
-3. Access the application:
-   - Frontend: http://localhost
-   - Backend API: http://localhost:5000
-
-### Development
-
-#### Frontend Development
-The frontend code is located in the `frontend` directory and is built with React.js and Material-UI.
-
-To run the frontend separately:
-```
-cd frontend
-npm install
-npm start
-```
-
-#### Backend Development
-The backend code is located in the `backend` directory and is built with Python/Flask.
-
-To run the backend separately:
-```
-cd backend
-pip install -r requirements.txt
-python app.py
-```
-
-## Project Structure
-
-```
-Refection/
-├── backend/                # Flask backend
-│   ├── app.py              # Main application file
-│   ├── models/             # AI/ML models
-│   └── requirements.txt    # Python dependencies
-├── frontend/               # React frontend
-│   ├── public/             # Static files
-│   └── src/                # React source code
-│       ├── components/     # Reusable components
-│       ├── context/        # Context providers
-│       └── pages/          # Application pages
-├── docker/                 # Docker configuration files
-└── docker-compose.yml      # Docker Compose configuration
-```
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgments
-
-- Material-UI for the UI components
-- MongoDB, Redis, and Kafka for the data infrastructure
-- BERT and GPT models for AI capabilities
+## File: repomix.config.json
+````json
+{
+  "input": {
+    "maxFileSize": 52428800
+  },
+  "output": {
+    "filePath": "repomix-output.md",
+    "style": "markdown",
+    "parsableStyle": false,
+    "fileSummary": true,
+    "directoryStructure": true,
+    "files": true,
+    "removeComments": false,
+    "removeEmptyLines": false,
+    "compress": false,
+    "topFilesLength": 5,
+    "showLineNumbers": false,
+    "copyToClipboard": false,
+    "git": {
+      "sortByChanges": true,
+      "sortByChangesMaxCommits": 100
+    }
+  },
+  "include": [],
+  "ignore": {
+    "useGitignore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": []
+  },
+  "security": {
+    "enableSecurityCheck": true
+  },
+  "tokenCount": {
+    "encoding": "o200k_base"
+  }
+}
 ````
 
 ## File: run_spark_jobs.sh
@@ -10578,6 +10905,521 @@ echo ""
 echo "To stop the application, press Ctrl+C and then run: docker-compose down"
 ````
 
+## File: start-agent.sh
+````bash
+#!/bin/bash
+
+echo "🤖 Starting Intelligent Agent Backend"
+echo "===================================="
+
+# Check if Python is installed
+if ! command -v python3 &> /dev/null; then
+    echo "❌ Python3 is not installed. Please install Python 3.7+ first."
+    exit 1
+fi
+
+echo "✅ Python3 is available"
+
+# Navigate to backend directory
+cd backend
+
+# Create virtual environment if it doesn't exist
+if [ ! -d "venv" ]; then
+    echo "📦 Creating Python virtual environment..."
+    python3 -m venv venv
+fi
+
+# Activate virtual environment
+echo "🔧 Activating virtual environment..."
+source venv/bin/activate
+
+# Install requirements
+echo "📥 Installing requirements..."
+pip install Flask Flask-CORS
+
+echo ""
+echo "🚀 Starting Intelligent Agent Backend..."
+echo "📡 Backend will be available at: http://localhost:5000"
+echo "🧠 Features: Memory Learning + A* Search + Emotion Analysis"
+echo ""
+echo "💡 To stop: Press Ctrl+C"
+echo ""
+
+# Start the intelligent agent
+python intelligent_agent.py
+````
+
+## File: start-ai-demo.sh
+````bash
+#!/bin/bash
+
+echo "🚀 Starting Reflectly AI - Emotional Pathfinding Demo"
+echo "================================================="
+
+# Check if Docker is installed
+if ! command -v docker &> /dev/null; then
+    echo "❌ Docker is not installed. Please install Docker first."
+    exit 1
+fi
+
+if ! command -v docker-compose &> /dev/null; then
+    echo "❌ Docker Compose is not installed. Please install Docker Compose first."
+    exit 1
+fi
+
+echo "✅ Docker and Docker Compose are available"
+
+# Make cleanup script executable
+chmod +x cleanup-for-ai.sh
+
+echo ""
+echo "🧹 Running cleanup to remove big data components..."
+./cleanup-for-ai.sh
+
+echo ""
+echo "🔧 Starting core AI services..."
+
+# Stop any existing containers
+docker-compose down
+
+# Build and start services
+docker-compose up -d --build
+
+echo ""
+echo "⏳ Waiting for services to be ready..."
+
+# Wait for backend to be ready
+echo "Checking backend health..."
+for i in {1..30}; do
+    if curl -s http://localhost:5002/health >/dev/null 2>&1; then
+        echo "✅ Backend is ready!"
+        break
+    fi
+    if [ $i -eq 30 ]; then
+        echo "❌ Backend failed to start. Check logs with: docker-compose logs backend"
+        exit 1
+    fi
+    sleep 2
+done
+
+# Wait for frontend to be ready
+echo "Checking frontend..."
+for i in {1..20}; do
+    if curl -s http://localhost:3000 >/dev/null 2>&1; then
+        echo "✅ Frontend is ready!"
+        break
+    fi
+    if [ $i -eq 20 ]; then
+        echo "⚠️  Frontend might still be starting. Check logs with: docker-compose logs frontend"
+    fi
+    sleep 3
+done
+
+echo ""
+echo "🎉 Reflectly AI is now running!"
+echo ""
+echo "🌐 Access Points:"
+echo "   Frontend (AI Demo): http://localhost:3000"
+echo "   Backend API:        http://localhost:5002"
+echo "   Health Check:       http://localhost:5002/health"
+echo ""
+echo "🧠 Core AI Features Available:"
+echo "   ✅ A* Emotional Pathfinding"
+echo "   ✅ Emotion Analysis from Text"
+echo "   ✅ Interactive Graph Visualization"
+echo "   ✅ Personalized Action Suggestions"
+echo ""
+echo "🔬 Test the AI API:"
+echo ""
+echo "1. Analyze emotion from text:"
+echo "   curl -X POST http://localhost:5002/api/emotions/analyze \\"
+echo "        -H 'Content-Type: application/json' \\"
+echo "        -d '{\"text\": \"I feel excited about this new project!\", \"user_email\": \"demo@example.com\"}'"
+echo ""
+echo "2. Find optimal emotional path:"
+echo "   curl -X POST http://localhost:5002/api/emotions/path \\"
+echo "        -H 'Content-Type: application/json' \\"
+echo "        -d '{\"user_email\": \"demo@example.com\", \"current_emotion\": \"sadness\", \"target_emotion\": \"joy\"}'"
+echo ""
+echo "3. Get graph visualization data:"
+echo "   curl http://localhost:5002/api/emotions/graph-data/demo@example.com"
+echo ""
+echo "📊 To view logs:"
+echo "   docker-compose logs -f"
+echo ""
+echo "🛑 To stop services:"
+echo "   docker-compose down"
+echo ""
+echo "🎯 Focus Areas:"
+echo "   - A* search algorithm in backend/models/search_algorithm.py"
+echo "   - Emotional graph theory in backend/models/emotional_graph.py"
+echo "   - AI visualization in frontend/src/pages/EmotionalJourneyGraph.js"
+echo ""
+echo "Happy pathfinding! 🎯✨"
+````
+
+## File: start-backend.sh
+````bash
+#!/bin/bash
+
+echo "🐍 Starting Simple Python Backend for Algorithm Development"
+echo "========================================================"
+
+# Check if Python is installed
+if ! command -v python3 &> /dev/null; then
+    echo "❌ Python3 is not installed. Please install Python 3.7+ first."
+    exit 1
+fi
+
+echo "✅ Python3 is available"
+
+# Navigate to backend directory
+cd backend
+
+# Create virtual environment if it doesn't exist
+if [ ! -d "venv" ]; then
+    echo "📦 Creating Python virtual environment..."
+    python3 -m venv venv
+fi
+
+# Activate virtual environment
+echo "🔧 Activating virtual environment..."
+source venv/bin/activate
+
+# Install requirements
+echo "📥 Installing minimal requirements..."
+pip install -r simple_requirements.txt
+
+echo ""
+echo "🚀 Starting Flask backend..."
+echo "📡 Backend will be available at: http://localhost:5000"
+echo "🔬 Test algorithm endpoint: http://localhost:5000/api/test-algorithm"
+echo ""
+echo "💡 To stop: Press Ctrl+C"
+echo ""
+
+# Start the simple Flask app
+python simple_app.py
+````
+
+## File: start-frontend.sh
+````bash
+#!/bin/bash
+
+echo "⚛️  Starting Simple React Frontend for Algorithm Development"
+echo "=========================================================="
+
+# Check if Node.js is installed
+if ! command -v node &> /dev/null; then
+    echo "❌ Node.js is not installed. Please install Node.js 16+ first."
+    exit 1
+fi
+
+# Check if npm is installed
+if ! command -v npm &> /dev/null; then
+    echo "❌ npm is not installed. Please install npm first."
+    exit 1
+fi
+
+echo "✅ Node.js and npm are available"
+
+# Navigate to frontend directory
+cd frontend
+
+# Install dependencies if node_modules doesn't exist
+if [ ! -d "node_modules" ]; then
+    echo "📦 Installing React dependencies..."
+    npm install
+else
+    echo "✅ Dependencies already installed"
+fi
+
+echo ""
+echo "🚀 Starting React development server..."
+echo "🌐 Frontend will be available at: http://localhost:3000"
+echo "🔗 Make sure backend is running at: http://localhost:5000"
+echo ""
+echo "💡 To stop: Press Ctrl+C"
+echo ""
+
+# Start the React development server
+npm start
+````
+
+## File: start-intelligent-agent.sh
+````bash
+#!/bin/bash
+
+echo "🤖 Starting Intelligent Agent with Memory Map"
+echo "============================================"
+echo "🧠 Features: Learning + A* Search + Memory Evolution"
+echo ""
+
+# Make scripts executable
+chmod +x start-agent.sh
+
+# Check requirements
+echo "🔍 Checking requirements..."
+
+# Check Python
+if ! command -v python3 &> /dev/null; then
+    echo "❌ Python3 is not installed. Please install Python 3.7+ first."
+    exit 1
+fi
+echo "✅ Python3: $(python3 --version)"
+
+# Check Node.js
+if ! command -v node &> /dev/null; then
+    echo "❌ Node.js is not installed. Please install Node.js 16+ first."
+    exit 1
+fi
+echo "✅ Node.js: $(node --version)"
+
+echo ""
+echo "🔧 Setting up backend..."
+
+# Setup backend
+cd backend
+
+# Create virtual environment if it doesn't exist
+if [ ! -d "venv" ]; then
+    echo "📦 Creating Python virtual environment..."
+    python3 -m venv venv
+fi
+
+# Activate virtual environment and install requirements
+echo "📥 Installing backend dependencies..."
+source venv/bin/activate
+pip install Flask Flask-CORS
+
+cd ..
+
+echo ""
+echo "🔧 Setting up frontend..."
+
+# Setup frontend
+cd frontend
+
+# Install npm dependencies
+if [ ! -d "node_modules" ]; then
+    echo "📦 Installing React dependencies..."
+    npm install
+else
+    echo "✅ React dependencies already installed"
+fi
+
+cd ..
+
+echo ""
+echo "🎯 Starting Intelligent Agent..."
+echo ""
+
+# Function to handle cleanup on exit
+cleanup() {
+    echo ""
+    echo "🛑 Shutting down services..."
+    kill $BACKEND_PID 2>/dev/null
+    kill $FRONTEND_PID 2>/dev/null
+    exit 0
+}
+
+# Trap Ctrl+C and call cleanup
+trap cleanup INT
+
+# Start backend in background
+echo "🤖 Starting Intelligent Agent Backend..."
+cd backend
+source venv/bin/activate
+python intelligent_agent.py &
+BACKEND_PID=$!
+cd ..
+
+# Wait a moment for backend to start
+sleep 3
+
+# Start frontend in background
+echo "🗺️  Starting Memory Map Frontend..."
+cd frontend
+npm start &
+FRONTEND_PID=$!
+cd ..
+
+echo ""
+echo "🎉 Intelligent Agent is now running!"
+echo ""
+echo "🌐 Access Points:"
+echo "   Frontend (Memory Map): http://localhost:3000"
+echo "   Backend API:           http://localhost:5000"
+echo ""
+echo "🤖 How it works:"
+echo "   😊 Share happy emotions → Agent asks for steps → Learns for future"
+echo "   😢 Share sad emotions → Agent suggests actions using A* search"
+echo "   🗺️  Memory map grows and evolves with each interaction"
+echo ""
+echo "🔬 Try these examples:"
+echo "   • 'I'm feeling really happy and excited today!'"
+echo "   • 'I'm sad and don't know what to do'"
+echo "   • 'I'm anxious about my presentation tomorrow'"
+echo ""
+echo "💡 Press Ctrl+C to stop both services"
+
+# Wait for background processes
+wait $BACKEND_PID $FRONTEND_PID
+````
+
+## File: start-simple.sh
+````bash
+#!/bin/bash
+
+echo "🚀 Simple Reflectly AI - Algorithm Development Setup"
+echo "=================================================="
+echo "🎯 Focus: Pure Algorithm Development"
+echo "🏗️  Architecture: Python Flask + React (No Docker, No Database)"
+echo ""
+
+# Make scripts executable
+chmod +x start-backend.sh
+chmod +x start-frontend.sh
+
+# Check requirements
+echo "🔍 Checking requirements..."
+
+# Check Python
+if ! command -v python3 &> /dev/null; then
+    echo "❌ Python3 is not installed. Please install Python 3.7+ first."
+    echo "   Download from: https://www.python.org/downloads/"
+    exit 1
+fi
+echo "✅ Python3: $(python3 --version)"
+
+# Check Node.js
+if ! command -v node &> /dev/null; then
+    echo "❌ Node.js is not installed. Please install Node.js 16+ first."
+    echo "   Download from: https://nodejs.org/"
+    exit 1
+fi
+echo "✅ Node.js: $(node --version)"
+
+# Check npm
+if ! command -v npm &> /dev/null; then
+    echo "❌ npm is not installed. Please install npm first."
+    exit 1
+fi
+echo "✅ npm: $(npm --version)"
+
+echo ""
+echo "🔧 Setting up backend..."
+
+# Setup backend
+cd backend
+
+# Create virtual environment if it doesn't exist
+if [ ! -d "venv" ]; then
+    echo "📦 Creating Python virtual environment..."
+    python3 -m venv venv
+fi
+
+# Activate virtual environment and install requirements
+echo "📥 Installing backend dependencies..."
+source venv/bin/activate
+pip install -r simple_requirements.txt
+
+cd ..
+
+echo ""
+echo "🔧 Setting up frontend..."
+
+# Setup frontend
+cd frontend
+
+# Install npm dependencies
+if [ ! -d "node_modules" ]; then
+    echo "📦 Installing React dependencies..."
+    npm install
+else
+    echo "✅ React dependencies already installed"
+fi
+
+cd ..
+
+echo ""
+echo "✅ Setup complete!"
+echo ""
+echo "🎯 Starting both backend and frontend..."
+echo ""
+
+# Function to handle cleanup on exit
+cleanup() {
+    echo ""
+    echo "🛑 Shutting down services..."
+    kill $BACKEND_PID 2>/dev/null
+    kill $FRONTEND_PID 2>/dev/null
+    exit 0
+}
+
+# Trap Ctrl+C and call cleanup
+trap cleanup INT
+
+# Start backend in background
+echo "🐍 Starting Python backend..."
+cd backend
+source venv/bin/activate
+python simple_app.py &
+BACKEND_PID=$!
+cd ..
+
+# Wait a moment for backend to start
+sleep 3
+
+# Start frontend in background
+echo "⚛️  Starting React frontend..."
+cd frontend
+npm start &
+FRONTEND_PID=$!
+cd ..
+
+echo ""
+echo "🎉 Simple Reflectly AI is now running!"
+echo ""
+echo "🌐 Access Points:"
+echo "   Frontend (AI Demo): http://localhost:3000"
+echo "   Backend API:        http://localhost:5000"
+echo "   Algorithm Test:     http://localhost:5000/api/test-algorithm"
+echo ""
+echo "🧠 Core Features:"
+echo "   ✅ A* Emotional Pathfinding"
+echo "   ✅ Simple Emotion Analysis"
+echo "   ✅ Interactive Visualization"
+echo "   ✅ Real-time Algorithm Testing"
+echo ""
+echo "📁 Key Files for Development:"
+echo "   🔬 backend/simple_app.py           - Main AI algorithms"
+echo "   🎨 frontend/src/SimpleAIDemo.js    - React interface"
+echo "   📊 AStarPathfinder class           - A* implementation"
+echo "   🧮 SimpleEmotionAnalyzer class     - Emotion detection"
+echo ""
+echo "🔬 Quick API Tests:"
+echo ""
+echo "# Test emotion analysis:"
+echo "curl -X POST http://localhost:5000/api/emotions/analyze \\"
+echo "     -H 'Content-Type: application/json' \\"
+echo "     -d '{\"text\": \"I feel excited about this!\", \"user_email\": \"demo@example.com\"}'"
+echo ""
+echo "# Test pathfinding:"
+echo "curl -X POST http://localhost:5000/api/emotions/path \\"
+echo "     -H 'Content-Type: application/json' \\"
+echo "     -d '{\"current_emotion\": \"sadness\", \"target_emotion\": \"joy\"}'"
+echo ""
+echo "# Test algorithm:"
+echo "curl http://localhost:5000/api/test-algorithm"
+echo ""
+echo "💡 Press Ctrl+C to stop both services"
+echo "🔄 Both services will restart automatically on file changes"
+
+# Wait for background processes
+wait $BACKEND_PID $FRONTEND_PID
+````
+
 ## File: stop_reflectly.sh
 ````bash
 #!/bin/bash
@@ -10599,6 +11441,311 @@ echo "Stopping Docker containers..."
 docker-compose down
 
 echo "All Reflectly components have been stopped."
+````
+
+## File: test-backend.sh
+````bash
+#!/bin/bash
+
+echo "🔍 Testing Intelligent Agent Backend"
+echo "=================================="
+
+# Check if backend is running
+echo "1. Checking if backend is running..."
+if curl -s http://localhost:5000/api/health > /dev/null; then
+    echo "✅ Backend is running on port 5000"
+else
+    echo "❌ Backend is NOT running on port 5000"
+    echo "💡 Start it with: ./start-agent.sh or python backend/intelligent_agent.py"
+    exit 1
+fi
+
+echo ""
+echo "2. Testing health endpoint..."
+curl -s http://localhost:5000/api/health | python -m json.tool
+
+echo ""
+echo ""
+echo "3. Testing emotion analysis..."
+curl -X POST http://localhost:5000/api/process-input \
+  -H "Content-Type: application/json" \
+  -d '{"text": "I am feeling really happy today!", "user_id": "test_user"}' \
+  | python -m json.tool
+
+echo ""
+echo ""
+echo "4. Testing memory map..."
+curl -s http://localhost:5000/api/memory-map | python -m json.tool
+
+echo ""
+echo ""
+echo "5. Testing memory stats..."
+curl -s http://localhost:5000/api/memory-stats | python -m json.tool
+
+echo ""
+echo ""
+echo "✅ Backend testing complete!"
+echo "If you see JSON responses above, the backend is working correctly."
+echo "If you see errors, check the backend logs for details."
+````
+
+## File: TROUBLESHOOTING.md
+````markdown
+# 🔧 Troubleshooting Guide - 403 Forbidden Error
+
+## 🚨 **Problem: 403 Forbidden Error**
+
+When you type input, you see:
+```
+POST http://localhost:3000/api/process-input 403 (Forbidden)
+```
+
+## 🎯 **Quick Fix (Most Common)**
+
+### **Step 1: Make sure backend is running**
+```bash
+# Option 1: Run backend only
+./start-agent.sh
+
+# Option 2: Run both frontend and backend
+./start-intelligent-agent.sh
+
+# Option 3: Manual backend start
+cd backend
+python3 intelligent_agent.py
+```
+
+### **Step 2: Test backend directly**
+```bash
+# Make test script executable and run it
+chmod +x test-backend.sh
+./test-backend.sh
+```
+
+**Expected output:**
+```json
+{
+  "status": "healthy",
+  "service": "Intelligent Agent with Memory Map"
+}
+```
+
+### **Step 3: Check frontend connection**
+Open browser console (F12) and look for:
+- ✅ "Backend connected" message
+- ✅ Green status indicator in the UI
+
+## 🔍 **Detailed Diagnosis**
+
+### **Check 1: Is backend running?**
+```bash
+curl http://localhost:5000/api/health
+```
+
+**If this fails:**
+- Backend is not running
+- **Solution**: Start backend with `./start-agent.sh`
+
+### **Check 2: CORS issues?**
+```bash
+curl -X POST http://localhost:5000/api/process-input \
+  -H "Content-Type: application/json" \
+  -d '{"text": "test", "user_id": "test"}'
+```
+
+**If this works but browser fails:**
+- CORS configuration issue
+- **Solution**: Check backend CORS settings
+
+### **Check 3: Port conflicts?**
+```bash
+# Check what's running on port 5000
+lsof -i :5000
+
+# Check what's running on port 3000  
+lsof -i :3000
+```
+
+**If wrong services are running:**
+- Kill conflicting processes
+- Restart with correct scripts
+
+## 🛠️ **Step-by-Step Solution**
+
+### **1. Stop everything**
+```bash
+# Kill any running processes
+pkill -f "intelligent_agent.py"
+pkill -f "npm start"
+pkill -f "react-scripts"
+```
+
+### **2. Start backend first**
+```bash
+cd backend
+python3 -m venv venv
+source venv/bin/activate
+pip install Flask Flask-CORS
+python3 intelligent_agent.py
+```
+
+**Wait for this message:**
+```
+🤖 Starting Intelligent Agent with Memory Map
+📡 API: http://localhost:5000
+```
+
+### **3. Test backend works**
+```bash
+# In new terminal
+curl http://localhost:5000/api/health
+```
+
+**Should see:**
+```json
+{
+  "status": "healthy",
+  "service": "Intelligent Agent with Memory Map"
+}
+```
+
+### **4. Start frontend**
+```bash
+# In new terminal
+cd frontend
+npm start
+```
+
+### **5. Check browser**
+- Go to http://localhost:3000
+- Look for **green "Backend connected"** status
+- Try typing: "I'm feeling happy today!"
+
+## ⚠️ **Common Issues & Solutions**
+
+### **Issue 1: Backend won't start**
+```bash
+# Error: ModuleNotFoundError: No module named 'flask'
+pip install Flask Flask-CORS
+
+# Error: Permission denied
+chmod +x start-agent.sh
+
+# Error: Port already in use
+lsof -i :5000
+kill -9 <PID>
+```
+
+### **Issue 2: Frontend shows red status**
+- Check browser console for exact error
+- Make sure backend is running first
+- Try refreshing the page
+
+### **Issue 3: CORS still blocked**
+- Make sure you're using the updated frontend code
+- Clear browser cache (Ctrl+Shift+R)
+- Check backend console for CORS messages
+
+### **Issue 4: Proxy not working**
+The updated frontend tries direct connection first, so proxy issues are avoided.
+
+## 🧪 **Test Commands**
+
+### **Test 1: Backend Health**
+```bash
+curl http://localhost:5000/api/health
+```
+
+### **Test 2: Emotion Processing**
+```bash
+curl -X POST http://localhost:5000/api/process-input \
+  -H "Content-Type: application/json" \
+  -d '{"text": "I am happy", "user_id": "test"}'
+```
+
+### **Test 3: Memory Map**
+```bash
+curl http://localhost:5000/api/memory-map
+```
+
+## 📋 **Checklist for Working System**
+
+- [ ] Backend running on port 5000
+- [ ] Frontend running on port 3000  
+- [ ] Green "Backend connected" status in UI
+- [ ] Can type text and get response
+- [ ] Memory map shows in right panel
+- [ ] No 403 or CORS errors in console
+
+## 🚀 **Quick Reset (Nuclear Option)**
+
+If nothing works, start completely fresh:
+
+```bash
+# 1. Kill everything
+pkill -f python
+pkill -f node
+pkill -f react
+
+# 2. Clean start backend
+cd backend
+rm -rf venv
+python3 -m venv venv
+source venv/bin/activate
+pip install Flask Flask-CORS
+python3 intelligent_agent.py
+
+# 3. Clean start frontend (new terminal)
+cd frontend
+rm -rf node_modules
+npm install
+npm start
+
+# 4. Test
+curl http://localhost:5000/api/health
+```
+
+## 🆘 **Still Not Working?**
+
+### **Check browser console (F12) for:**
+- Network errors
+- CORS errors  
+- JavaScript errors
+
+### **Check backend console for:**
+- Flask startup messages
+- CORS configuration
+- Request logs
+
+### **Common error messages:**
+- `EADDRINUSE`: Port already in use
+- `Connection refused`: Backend not running
+- `CORS error`: CORS misconfiguration
+- `403 Forbidden`: Permission/routing issue
+
+## ✅ **Success Indicators**
+
+**Backend console should show:**
+```
+🤖 Starting Intelligent Agent with Memory Map
+🧠 Features: Emotion Analysis + A* Search + Learning
+📡 API: http://localhost:5000
+✅ CORS enabled for http://localhost:3000
+```
+
+**Frontend should show:**
+- ✅ Green "Backend connected" status
+- 🗺️ Memory map visualization (even if empty)
+- 💬 Conversation interface ready for input
+
+**Browser console should show:**
+```
+✅ Backend connected: {status: "healthy", service: "Intelligent Agent with Memory Map"}
+```
+
+---
+
+**After following this guide, your intelligent agent should work correctly! The 403 error is almost always caused by the backend not running or CORS misconfiguration.** 🔧✨
 ````
 
 ## File: backend/models/emotion_analyzer.py
@@ -10796,328 +11943,546 @@ class EmotionAnalyzer:
         return emotion in self.positive_emotions
 ````
 
-## File: backend/models/emotional_graph.py
+## File: backend/simple_app.py
 ````python
+"""
+Ultra-Simple Reflectly Backend for Algorithm Development
+Pure Python Flask app with in-memory storage - no databases, no Docker
+"""
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import json
 import datetime
-from pymongo import MongoClient
-from bson.objectid import ObjectId
+from collections import defaultdict
+import re
+import math
+import heapq
 
-class EmotionalGraph:
-    """
-    Represents and manages emotional state transitions.
-    Stores emotional states as nodes in a graph structure, with transitions between states as edges.
-    """
+app = Flask(__name__)
+
+# Configure CORS properly
+CORS(app, resources={
+    r"/api/*": {
+        "origins": ["http://localhost:3000", "http://127.0.0.1:3000"],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"]
+    }
+})
+
+# In-memory storage (replace database)
+emotional_states = []
+emotional_transitions = []
+user_data = defaultdict(list)
+
+# Available emotions
+EMOTIONS = ['joy', 'sadness', 'anger', 'fear', 'disgust', 'surprise', 'neutral']
+POSITIVE_EMOTIONS = ['joy', 'surprise']
+NEGATIVE_EMOTIONS = ['sadness', 'anger', 'fear', 'disgust']
+
+class SimpleEmotionAnalyzer:
+    """Simple emotion analysis using keyword matching"""
     
-    def __init__(self, db):
-        """
-        Initialize the EmotionalGraph with a database connection.
+    def __init__(self):
+        self.emotion_keywords = {
+            'joy': ['happy', 'excited', 'joy', 'cheerful', 'glad', 'delighted', 'pleased', 'thrilled', 'elated', 'amazing', 'awesome', 'fantastic', 'wonderful', 'great'],
+            'sadness': ['sad', 'depressed', 'down', 'upset', 'miserable', 'gloomy', 'sorrowful', 'melancholy', 'disappointed', 'heartbroken', 'crying', 'tears'],
+            'anger': ['angry', 'furious', 'mad', 'irritated', 'annoyed', 'frustrated', 'rage', 'livid', 'pissed', 'outraged', 'hostile', 'aggressive'],
+            'fear': ['scared', 'afraid', 'frightened', 'worried', 'anxious', 'nervous', 'terrified', 'panic', 'overwhelmed', 'stressed', 'concerned', 'uneasy'],
+            'disgust': ['disgusted', 'revolted', 'sickened', 'appalled', 'repulsed', 'nauseated', 'grossed', 'revolting', 'disgusting'],
+            'surprise': ['surprised', 'shocked', 'amazed', 'astonished', 'stunned', 'unexpected', 'wow', 'incredible', 'unbelievable'],
+        }
+    
+    def analyze(self, text):
+        """Analyze emotion in text using simple keyword matching"""
+        text_lower = text.lower()
+        scores = {}
         
-        Args:
-            db: MongoDB database connection
-        """
-        self.db = db
-        self.emotions_collection = db.emotional_states
-        self.transitions_collection = db.emotional_transitions
+        for emotion, keywords in self.emotion_keywords.items():
+            score = sum(1 for keyword in keywords if keyword in text_lower)
+            scores[emotion] = score
         
-        # Define positive and negative emotions
-        self.positive_emotions = ['joy', 'surprise']
-        self.negative_emotions = ['sadness', 'anger', 'fear', 'disgust']
-        self.neutral_emotions = ['neutral']
+        # If no emotions detected, default to neutral
+        if not any(scores.values()):
+            scores['neutral'] = 1
         
-    def record_emotion(self, user_email, emotion_data, entry_id=None):
-        """
-        Record an emotional state for a user.
+        # Get primary emotion
+        primary_emotion = max(scores, key=scores.get)
         
-        Args:
-            user_email (str): The user's email
-            emotion_data (dict): Emotion analysis data
-            entry_id (str, optional): Associated journal entry ID
+        # Normalize scores
+        total_score = sum(scores.values())
+        if total_score > 0:
+            normalized_scores = {k: v/total_score for k, v in scores.items()}
+        else:
+            normalized_scores = {emotion: 1/len(EMOTIONS) for emotion in EMOTIONS}
+        
+        return {
+            'primary_emotion': primary_emotion,
+            'is_positive': primary_emotion in POSITIVE_EMOTIONS,
+            'emotion_scores': normalized_scores,
+            'confidence': max(normalized_scores.values())
+        }
+
+class AStarPathfinder:
+    """A* algorithm for finding optimal emotional paths"""
+    
+    def __init__(self):
+        # Default transition costs (can be personalized later)
+        self.base_costs = {
+            ('sadness', 'joy'): 2.0,
+            ('sadness', 'neutral'): 1.0,
+            ('sadness', 'anger'): 1.3,
+            ('sadness', 'fear'): 1.2,
+            ('sadness', 'disgust'): 1.1,
+            ('sadness', 'surprise'): 1.8,
             
-        Returns:
-            str: ID of the recorded emotional state
-        """
-        # Create emotional state document
-        emotion_state = {
-            'user_email': user_email,
-            'primary_emotion': emotion_data.get('primary_emotion', 'neutral'),
-            'is_positive': emotion_data.get('is_positive', False),
-            'emotion_scores': emotion_data.get('emotion_scores', {}),
-            'entry_id': entry_id,
-            'timestamp': datetime.datetime.now()
+            ('anger', 'joy'): 2.2,
+            ('anger', 'neutral'): 1.3,
+            ('anger', 'sadness'): 1.2,
+            ('anger', 'fear'): 1.1,
+            ('anger', 'disgust'): 0.9,
+            ('anger', 'surprise'): 1.5,
+            
+            ('fear', 'joy'): 2.1,
+            ('fear', 'neutral'): 1.2,
+            ('fear', 'sadness'): 1.1,
+            ('fear', 'anger'): 1.0,
+            ('fear', 'disgust'): 0.9,
+            ('fear', 'surprise'): 1.4,
+            
+            ('disgust', 'joy'): 2.0,
+            ('disgust', 'neutral'): 1.1,
+            ('disgust', 'sadness'): 1.0,
+            ('disgust', 'anger'): 0.8,
+            ('disgust', 'fear'): 0.9,
+            ('disgust', 'surprise'): 1.3,
+            
+            ('neutral', 'joy'): 0.7,
+            ('neutral', 'sadness'): 0.8,
+            ('neutral', 'anger'): 0.9,
+            ('neutral', 'fear'): 0.8,
+            ('neutral', 'disgust'): 0.9,
+            ('neutral', 'surprise'): 0.6,
+            
+            ('joy', 'neutral'): 0.8,
+            ('joy', 'sadness'): 1.5,
+            ('joy', 'anger'): 1.8,
+            ('joy', 'fear'): 1.7,
+            ('joy', 'disgust'): 1.6,
+            ('joy', 'surprise'): 0.5,
+            
+            ('surprise', 'joy'): 0.6,
+            ('surprise', 'neutral'): 0.7,
+            ('surprise', 'sadness'): 1.2,
+            ('surprise', 'anger'): 1.4,
+            ('surprise', 'fear'): 1.3,
+            ('surprise', 'disgust'): 1.2,
         }
         
-        # Insert into database
-        result = self.emotions_collection.insert_one(emotion_state)
-        emotion_state_id = result.inserted_id
-        
-        # Get previous emotional state to create transition
-        previous_state = self._get_previous_emotional_state(user_email)
-        
-        if previous_state:
-            self._record_transition(
-                user_email, 
-                previous_state['primary_emotion'],
-                emotion_data.get('primary_emotion', 'neutral'),
-                previous_state['_id'],
-                emotion_state_id
-            )
-        
-        return str(emotion_state_id)
+        # Fill in missing combinations with default values
+        for from_emotion in EMOTIONS:
+            for to_emotion in EMOTIONS:
+                if from_emotion != to_emotion and (from_emotion, to_emotion) not in self.base_costs:
+                    if to_emotion in POSITIVE_EMOTIONS:
+                        self.base_costs[(from_emotion, to_emotion)] = 1.5
+                    elif to_emotion == 'neutral':
+                        self.base_costs[(from_emotion, to_emotion)] = 1.0
+                    else:
+                        self.base_costs[(from_emotion, to_emotion)] = 1.2
     
-    def _get_previous_emotional_state(self, user_email):
-        """
-        Get the user's previous emotional state.
-        
-        Args:
-            user_email (str): The user's email
-            
-        Returns:
-            dict: Previous emotional state or None
-        """
-        # Find the most recent emotional state for this user
-        return self.emotions_collection.find_one(
-            {'user_email': user_email},
-            sort=[('timestamp', -1)]  # Sort by timestamp descending
-        )
+    def heuristic(self, current, target):
+        """Heuristic function for A* search"""
+        if current == target:
+            return 0
+        return self.base_costs.get((current, target), 1.5)
     
-    def _record_transition(self, user_email, from_emotion, to_emotion, from_state_id, to_state_id):
-        """
-        Record a transition between emotional states.
-        
-        Args:
-            user_email (str): The user's email
-            from_emotion (str): Source emotion
-            to_emotion (str): Target emotion
-            from_state_id: Source state ID
-            to_state_id: Target state ID
+    def get_neighbors(self, emotion):
+        """Get possible transitions from an emotion"""
+        neighbors = {}
+        for target in EMOTIONS:
+            if target != emotion:
+                cost = self.base_costs.get((emotion, target), 1.5)
+                action = self.get_action(emotion, target)
+                neighbors[target] = {
+                    'cost': cost,
+                    'action': action,
+                    'success_rate': min(1.0, 1.0 / cost)  # Higher cost = lower success rate
+                }
+        return neighbors
+    
+    def get_action(self, from_emotion, to_emotion):
+        """Get recommended action for transition"""
+        actions = {
+            ('sadness', 'joy'): "Engage in activities you enjoy",
+            ('sadness', 'neutral'): "Practice mindfulness meditation",
+            ('sadness', 'anger'): "Express your feelings constructively",
+            ('sadness', 'fear'): "Identify specific concerns",
+            ('sadness', 'disgust'): "Focus on positive aspects",
+            ('sadness', 'surprise'): "Try something new and unexpected",
             
-        Returns:
-            str: ID of the recorded transition
-        """
-        # Create transition document
-        transition = {
-            'user_email': user_email,
-            'from_emotion': from_emotion,
-            'to_emotion': to_emotion,
-            'from_state_id': str(from_state_id),
-            'to_state_id': str(to_state_id),
-            'timestamp': datetime.datetime.now()
+            ('anger', 'joy'): "Channel energy into positive activities",
+            ('anger', 'neutral'): "Take deep breaths and count to 10",
+            ('anger', 'sadness'): "Reflect on underlying feelings",
+            ('anger', 'fear'): "Consider potential consequences",
+            ('anger', 'disgust'): "Shift focus to solutions",
+            ('anger', 'surprise'): "Do something unexpected to break the pattern",
+            
+            ('fear', 'joy'): "Focus on positive outcomes",
+            ('fear', 'neutral'): "Ground yourself in the present moment",
+            ('fear', 'sadness'): "Share your concerns with someone you trust",
+            ('fear', 'anger'): "Channel fear into productive action",
+            ('fear', 'disgust'): "Challenge negative thoughts",
+            ('fear', 'surprise'): "Embrace uncertainty as opportunity",
+            
+            ('disgust', 'joy'): "Focus on things you appreciate",
+            ('disgust', 'neutral'): "Practice acceptance",
+            ('disgust', 'sadness'): "Explore underlying values",
+            ('disgust', 'anger'): "Set boundaries",
+            ('disgust', 'fear'): "Examine core concerns",
+            ('disgust', 'surprise'): "Look for unexpected positive aspects",
+            
+            ('neutral', 'joy'): "Engage in activities you enjoy",
+            ('neutral', 'sadness'): "Allow yourself to feel emotions",
+            ('neutral', 'anger'): "Identify sources of frustration",
+            ('neutral', 'fear'): "Acknowledge concerns",
+            ('neutral', 'disgust'): "Identify values being challenged",
+            ('neutral', 'surprise'): "Seek out new experiences",
+            
+            ('joy', 'neutral'): "Practice mindfulness",
+            ('joy', 'sadness'): "Reflect on meaningful experiences",
+            ('joy', 'anger'): "Channel energy constructively",
+            ('joy', 'fear'): "Consider growth opportunities",
+            ('joy', 'disgust'): "Examine values and boundaries",
+            ('joy', 'surprise'): "Share your joy with others",
+            
+            ('surprise', 'joy'): "Embrace the unexpected",
+            ('surprise', 'neutral'): "Reflect on what surprised you",
+            ('surprise', 'sadness'): "Process your feelings about the surprise",
+            ('surprise', 'anger'): "Consider why this triggered anger",
+            ('surprise', 'fear'): "Identify what feels threatening",
+            ('surprise', 'disgust'): "Examine your boundaries",
         }
-        
-        # Insert into database
-        result = self.transitions_collection.insert_one(transition)
-        return str(result.inserted_id)
+        return actions.get((from_emotion, to_emotion), f"Work on transitioning from {from_emotion} to {to_emotion}")
     
-    def get_emotion_history(self, user_email, limit=10):
-        """
-        Get the user's emotion history.
+    def find_path(self, start, goal, max_depth=5):
+        """Find optimal path using A* algorithm"""
+        if start == goal:
+            return {
+                'path': [start],
+                'actions': [],
+                'total_cost': 0,
+                'estimated_success_rate': 1.0
+            }
         
-        Args:
-            user_email (str): The user's email
-            limit (int): Maximum number of records to return
+        # A* algorithm implementation
+        open_set = [(0, start, [])]  # (f_score, current_node, path)
+        closed_set = set()
+        g_score = {start: 0}
+        
+        while open_set:
+            current_f, current, path = heapq.heappop(open_set)
             
-        Returns:
-            list: List of emotional states
-        """
-        # Find emotional states for this user
-        states = list(self.emotions_collection.find(
-            {'user_email': user_email},
-            sort=[('timestamp', -1)],
-            limit=limit
-        ))
-        
-        # Convert ObjectId to string
-        for state in states:
-            state['_id'] = str(state['_id'])
-        
-        return states
-    
-    def get_suggested_actions(self, user_email, current_emotion):
-        """
-        Get suggested actions for transitioning from the current emotional state.
-        This implementation returns personalized suggestions based on the user's emotional history.
-        
-        Args:
-            user_email (str): The user's email
-            current_emotion (str): Current emotional state
+            if len(path) >= max_depth:
+                continue
+                
+            if current in closed_set:
+                continue
+                
+            closed_set.add(current)
             
-        Returns:
-            list: List of suggested actions
-        """
-        # Define generic suggestions for each emotion type as fallback
-        generic_suggestions = {
+            if current == goal:
+                # Reconstruct path with actions
+                full_path = path + [current]
+                actions = []
+                total_cost = g_score[current]
+                
+                for i in range(len(full_path) - 1):
+                    from_emotion = full_path[i]
+                    to_emotion = full_path[i + 1]
+                    action = self.get_action(from_emotion, to_emotion)
+                    cost = self.base_costs.get((from_emotion, to_emotion), 1.5)
+                    
+                    actions.append({
+                        'from': from_emotion,
+                        'to': to_emotion,
+                        'action': action,
+                        'success_rate': min(1.0, 1.0 / cost)
+                    })
+                
+                # Calculate estimated success rate
+                if actions:
+                    success_rates = [action['success_rate'] for action in actions]
+                    estimated_success_rate = 1.0
+                    for rate in success_rates:
+                        estimated_success_rate *= rate
+                else:
+                    estimated_success_rate = 1.0
+                
+                return {
+                    'path': full_path,
+                    'actions': actions,
+                    'total_cost': total_cost,
+                    'estimated_success_rate': estimated_success_rate
+                }
+            
+            # Explore neighbors
+            neighbors = self.get_neighbors(current)
+            for neighbor, info in neighbors.items():
+                if neighbor in closed_set:
+                    continue
+                
+                tentative_g = g_score[current] + info['cost']
+                
+                if neighbor not in g_score or tentative_g < g_score[neighbor]:
+                    g_score[neighbor] = tentative_g
+                    f_score = tentative_g + self.heuristic(neighbor, goal)
+                    heapq.heappush(open_set, (f_score, neighbor, path + [current]))
+        
+        # No path found, return direct transition
+        return {
+            'path': [start, goal],
+            'actions': [{
+                'from': start,
+                'to': goal,
+                'action': self.get_action(start, goal),
+                'success_rate': 0.5
+            }],
+            'total_cost': self.base_costs.get((start, goal), 2.0),
+            'estimated_success_rate': 0.5
+        }
+
+# Initialize AI components
+emotion_analyzer = SimpleEmotionAnalyzer()
+pathfinder = AStarPathfinder()
+
+# API Routes
+@app.route('/api/health', methods=['GET'])
+def health():
+    return jsonify({
+        "status": "healthy", 
+        "message": "Simple AI backend running",
+        "cors_enabled": True,
+        "endpoints": [
+            "/api/emotions/analyze",
+            "/api/emotions/path", 
+            "/api/emotions/available",
+            "/api/emotions/suggestions",
+            "/api/test-algorithm"
+        ]
+    })
+
+@app.route('/api/emotions/analyze', methods=['POST', 'OPTIONS'])
+def analyze_emotion():
+    if request.method == 'OPTIONS':
+        # Handle preflight request
+        return '', 200
+        
+    try:
+        data = request.get_json()
+        text = data.get('text', '')
+        user_email = data.get('user_email', 'demo@example.com')
+        
+        if not text:
+            return jsonify({"error": "Text is required"}), 400
+        
+        # Analyze emotion
+        result = emotion_analyzer.analyze(text)
+        
+        # Store in memory
+        emotion_entry = {
+            'id': len(emotional_states),
+            'user_email': user_email,
+            'text': text,
+            'timestamp': datetime.datetime.now().isoformat(),
+            **result
+        }
+        emotional_states.append(emotion_entry)
+        user_data[user_email].append(emotion_entry)
+        
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
+
+@app.route('/api/emotions/path', methods=['POST', 'OPTIONS'])
+def find_path():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    try:
+        data = request.get_json()
+        current_emotion = data.get('current_emotion', '')
+        target_emotion = data.get('target_emotion', '')
+        
+        if not current_emotion or not target_emotion:
+            return jsonify({"error": "current_emotion and target_emotion are required"}), 400
+        
+        if current_emotion not in EMOTIONS or target_emotion not in EMOTIONS:
+            return jsonify({"error": "Invalid emotion"}), 400
+        
+        # Find optimal path
+        result = pathfinder.find_path(current_emotion, target_emotion)
+        
+        return jsonify({
+            'current_emotion': current_emotion,
+            'target_emotion': target_emotion,
+            **result
+        })
+    except Exception as e:
+        return jsonify({"error": f"Pathfinding failed: {str(e)}"}), 500
+
+@app.route('/api/emotions/available', methods=['GET'])
+def get_emotions():
+    return jsonify({"emotions": EMOTIONS})
+
+@app.route('/api/emotions/suggestions', methods=['POST', 'OPTIONS'])
+def get_suggestions():
+    if request.method == 'OPTIONS':
+        return '', 200
+        
+    try:
+        data = request.get_json()
+        current_emotion = data.get('current_emotion', '')
+        
+        suggestions = {
             'sadness': [
-                "Reach out to a friend or family member",
-                "Practice self-care activities",
                 "Listen to uplifting music",
-                "Take a short walk outside"
+                "Call a friend or family member", 
+                "Take a walk in nature",
+                "Practice gratitude by writing 3 good things"
             ],
             'anger': [
-                "Take deep breaths for a few minutes",
-                "Write down your thoughts",
-                "Engage in physical activity",
-                "Practice mindfulness meditation"
+                "Take 10 deep breaths",
+                "Do some physical exercise",
+                "Write down your feelings",
+                "Count to 10 slowly"
             ],
             'fear': [
-                "Focus on your breathing",
+                "Practice grounding techniques (5-4-3-2-1 method)",
                 "Challenge negative thoughts",
                 "Talk to someone you trust",
-                "Create a plan to address your concerns"
+                "Focus on what you can control"
             ],
             'disgust': [
-                "Redirect your attention to something positive",
+                "Focus on positive aspects",
                 "Practice acceptance",
                 "Engage in a pleasant activity",
                 "Connect with supportive people"
             ],
             'neutral': [
-                "Set a goal for today",
-                "Practice gratitude",
-                "Learn something new",
-                "Connect with nature"
+                "Set a small goal for today",
+                "Practice mindfulness",
+                "Try something new",
+                "Express gratitude"
             ],
             'joy': [
-                "Share your positive experience with others",
-                "Practice gratitude",
+                "Share your happiness with others",
                 "Savor the moment",
-                "Set new goals"
+                "Use this energy for creative activities",
+                "Help someone else"
             ],
             'surprise': [
                 "Reflect on what surprised you",
-                "Consider what you can learn from this experience",
-                "Share your experience with others",
-                "Use this energy for creative activities"
+                "Consider what you can learn",
+                "Share the experience",
+                "Embrace the unexpected"
             ]
         }
         
-        # If current emotion is already positive, return generic suggestions
-        if current_emotion in self.positive_emotions:
-            return generic_suggestions.get(current_emotion, generic_suggestions['neutral'])
+        return jsonify({"suggestions": suggestions.get(current_emotion, [])})
+    except Exception as e:
+        return jsonify({"error": f"Failed to get suggestions: {str(e)}"}), 500
+
+@app.route('/api/emotions/graph-data/<user_email>', methods=['GET'])
+def get_graph_data(user_email):
+    try:
+        # Create simple graph data for visualization
+        nodes = [{'id': emotion, 'label': emotion.title()} for emotion in EMOTIONS]
         
-        # Find personalized suggestions based on user's emotional history
-        personalized_suggestions = self._find_personalized_path_suggestions(user_email, current_emotion)
-        
-        # If we have personalized suggestions, use them; otherwise fall back to generic
-        if personalized_suggestions and len(personalized_suggestions) >= 2:
-            return personalized_suggestions
-        else:
-            return generic_suggestions.get(current_emotion, generic_suggestions['neutral'])
-    
-    def _find_personalized_path_suggestions(self, user_email, current_emotion):
-        """
-        Find personalized suggestions based on the user's emotional transition history.
-        Identifies paths that have previously led from the current emotion to positive emotions.
-        
-        Args:
-            user_email (str): The user's email
-            current_emotion (str): Current emotional state
-            
-        Returns:
-            list: List of personalized suggested actions
-        """
-        # Get transitions from the current emotion to any positive emotion
-        transitions = list(self.transitions_collection.find({
-            'user_email': user_email,
-            'from_emotion': current_emotion,
-            'to_emotion': {'$in': self.positive_emotions}
-        }).sort('timestamp', -1).limit(10))
-        
-        if not transitions:
-            return []
-        
-        # Get the emotional states involved in these transitions
-        state_ids = []
-        for transition in transitions:
-            state_ids.append(ObjectId(transition['from_state_id']))
-            state_ids.append(ObjectId(transition['to_state_id']))
-        
-        # Get the journal entries associated with these emotional states
-        states = list(self.emotions_collection.find({
-            '_id': {'$in': state_ids}
-        }))
-        
-        # Create a mapping of state IDs to entry IDs
-        state_to_entry = {}
-        for state in states:
-            if state.get('entry_id'):
-                state_to_entry[str(state['_id'])] = state['entry_id']
-        
-        # Extract personalized suggestions based on content analysis
-        personalized_suggestions = [
-            f"Try activities that helped you before: {self._extract_activity_from_transition(transition)}"
-            for transition in transitions
-            if self._extract_activity_from_transition(transition)
+        # Create edges based on common transitions
+        edges = []
+        common_transitions = [
+            ('sadness', 'neutral'), ('neutral', 'joy'),
+            ('anger', 'neutral'), ('fear', 'neutral'),
+            ('disgust', 'neutral'), ('surprise', 'joy')
         ]
         
-        # Add some generic transition suggestions if we don't have enough
-        if len(personalized_suggestions) < 3:
-            if current_emotion == 'sadness':
-                personalized_suggestions.append("Recall a happy memory and focus on the positive feelings")
-            elif current_emotion == 'anger':
-                personalized_suggestions.append("Practice deep breathing and count to 10 before responding")
-            elif current_emotion == 'fear':
-                personalized_suggestions.append("Write down your fears and challenge each one with evidence")
-            elif current_emotion == 'disgust':
-                personalized_suggestions.append("Focus on something beautiful or inspiring in your environment")
+        for from_emotion, to_emotion in common_transitions:
+            edges.append({
+                'from': from_emotion,
+                'to': to_emotion,
+                'weight': 1
+            })
         
-        # Limit to 4 suggestions
-        return personalized_suggestions[:4]
-    
-    def get_emotion_history(self, user_email, limit=5):
-        """
-        Get a user's emotional history, ordered by most recent first.
+        # Add user's emotional history
+        history = user_data.get(user_email, [])
         
-        Args:
-            user_email (str): The user's email
-            limit (int): Maximum number of emotional states to return
-            
-        Returns:
-            list: List of emotional state documents
-        """
-        try:
-            # Get the most recent emotional states for the user
-            emotion_history = list(self.emotions_collection.find(
-                {'user_email': user_email}
-            ).sort('timestamp', -1).limit(limit))
-            
-            # Convert ObjectId to string for serialization
-            for state in emotion_history:
-                if '_id' in state:
-                    state['_id'] = str(state['_id'])
-                    
-            return emotion_history
-        except Exception as e:
-            print(f"Error retrieving emotion history: {str(e)}")
-            return []
-    
-    def _extract_activity_from_transition(self, transition):
-        """
-        Extract a potential activity that led to a positive emotional transition.
-        This is a simplified implementation that could be enhanced with NLP in production.
+        return jsonify({
+            'nodes': nodes,
+            'edges': edges,
+            'history': history[-10:]  # Last 10 entries
+        })
+    except Exception as e:
+        return jsonify({"error": f"Failed to get graph data: {str(e)}"}), 500
+
+@app.route('/api/test-algorithm', methods=['GET'])
+def test_algorithm():
+    """Test endpoint to verify A* algorithm is working"""
+    try:
+        test_results = []
         
-        Args:
-            transition: The emotional transition document
-            
-        Returns:
-            str: A suggested activity or None
-        """
-        # This would ideally use NLP to extract activities from journal entries
-        # For now, we'll return a simplified suggestion based on the emotions involved
-        from_emotion = transition.get('from_emotion', '')
-        to_emotion = transition.get('to_emotion', '')
+        test_cases = [
+            ('sadness', 'joy'),
+            ('anger', 'neutral'),
+            ('fear', 'joy'),
+            ('disgust', 'neutral'),
+            ('anger', 'joy'),
+            ('fear', 'surprise'),
+            ('sadness', 'surprise')
+        ]
         
-        if from_emotion == 'sadness' and to_emotion == 'joy':
-            return "connecting with friends or engaging in a favorite hobby"
-        elif from_emotion == 'anger' and to_emotion in self.positive_emotions:
-            return "physical exercise or creative expression"
-        elif from_emotion == 'fear' and to_emotion in self.positive_emotions:
-            return "meditation or talking through your concerns"
-        elif from_emotion == 'disgust' and to_emotion in self.positive_emotions:
-            return "focusing on gratitude or spending time in nature"
-        elif from_emotion == 'neutral' and to_emotion in self.positive_emotions:
-            return "setting and achieving small goals"
-        else:
-            return None
+        for start, goal in test_cases:
+            result = pathfinder.find_path(start, goal)
+            test_results.append({
+                'test': f"{start} -> {goal}",
+                'path': result['path'],
+                'cost': result['total_cost'],
+                'success_rate': result['estimated_success_rate'],
+                'steps': len(result['path']) - 1
+            })
+        
+        return jsonify({
+            "algorithm_tests": test_results,
+            "total_tests": len(test_cases),
+            "algorithm": "A* Search",
+            "average_success_rate": sum(t['success_rate'] for t in test_results) / len(test_results)
+        })
+    except Exception as e:
+        return jsonify({"error": f"Algorithm test failed: {str(e)}"}), 500
+
+if __name__ == '__main__':
+    print("🧠 Starting Simple Reflectly AI Backend")
+    print("🎯 Focus: Algorithm Development")
+    print("📡 API: http://localhost:5000")
+    print("🔬 Test endpoint: http://localhost:5000/api/test-algorithm")
+    print("✅ CORS enabled for http://localhost:3000")
+    app.run(host='0.0.0.0', port=5000, debug=True)
+````
+
+## File: frontend/public/index.html
+````html
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#000000" />
+    <meta name="description" content="Simple Reflectly AI - Algorithm Development" />
+    <title>Simple Reflectly AI</title>
+  </head>
+  <body>
+    <noscript>You need to enable JavaScript to run this app.</noscript>
+    <div id="root"></div>
+  </body>
+</html>
 ````
 
 ## File: frontend/src/components/layout/Header.js
@@ -11497,6 +12862,597 @@ export const AuthProvider = ({ children }) => {
 };
 
 export default AuthContext;
+````
+
+## File: frontend/src/pages/EmotionalJourneyGraph.js
+````javascript
+import React, { useState, useEffect, useCallback } from 'react';
+import axios from '../utils/axiosConfig';
+
+const EmotionalJourneyGraph = () => {
+  const [graphData, setGraphData] = useState({ nodes: [], edges: [], history: [] });
+  const [currentEmotion, setCurrentEmotion] = useState('');
+  const [targetEmotion, setTargetEmotion] = useState('');
+  const [pathResult, setPathResult] = useState(null);
+  const [suggestions, setSuggestions] = useState([]);
+  const [availableEmotions, setAvailableEmotions] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [userEmail] = useState('demo@reflectly.ai'); // Demo user for AI testing
+
+  // Emotion colors for visualization
+  const emotionColors = {
+    joy: '#FFD700',
+    sadness: '#4169E1', 
+    anger: '#DC143C',
+    fear: '#9932CC',
+    disgust: '#228B22',
+    surprise: '#FF69B4',
+    neutral: '#808080'
+  };
+
+  // Load available emotions on component mount
+  useEffect(() => {
+    loadAvailableEmotions();
+    loadGraphData();
+  }, []);
+
+  const loadAvailableEmotions = async () => {
+    try {
+      const response = await axios.get('/api/emotions/available');
+      setAvailableEmotions(response.data.emotions);
+      if (response.data.emotions.length > 0) {
+        setCurrentEmotion(response.data.emotions[0]);
+        setTargetEmotion('joy'); // Default target
+      }
+    } catch (error) {
+      console.error('Error loading emotions:', error);
+    }
+  };
+
+  const loadGraphData = async () => {
+    try {
+      setLoading(true);
+      const response = await axios.get(`/api/emotions/graph-data/${userEmail}`);
+      setGraphData(response.data);
+    } catch (error) {
+      console.error('Error loading graph data:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const findOptimalPath = async () => {
+    if (!currentEmotion || !targetEmotion) return;
+    
+    try {
+      setLoading(true);
+      const response = await axios.post('/api/emotions/path', {
+        user_email: userEmail,
+        current_emotion: currentEmotion,
+        target_emotion: targetEmotion,
+        max_depth: 10
+      });
+      setPathResult(response.data);
+    } catch (error) {
+      console.error('Error finding path:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getSuggestions = async () => {
+    if (!currentEmotion) return;
+    
+    try {
+      const response = await axios.post('/api/emotions/suggestions', {
+        user_email: userEmail,
+        current_emotion: currentEmotion
+      });
+      setSuggestions(response.data.suggestions);
+    } catch (error) {
+      console.error('Error getting suggestions:', error);
+    }
+  };
+
+  const analyzeText = async (text) => {
+    try {
+      setLoading(true);
+      const response = await axios.post('/api/emotions/analyze', {
+        text: text,
+        user_email: userEmail
+      });
+      
+      // Update current emotion based on analysis
+      setCurrentEmotion(response.data.primary_emotion);
+      
+      // Reload graph data to show new transition
+      await loadGraphData();
+      
+      return response.data;
+    } catch (error) {
+      console.error('Error analyzing text:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const renderGraph = () => {
+    const { nodes, edges } = graphData;
+    
+    if (!nodes.length) {
+      return (
+        <div className=\"graph-placeholder\">
+          <p>No emotional data yet. Try analyzing some text or finding a path!</p>
+        </div>
+      );
+    }
+
+    return (
+      <div className=\"emotion-graph\">
+        <svg width=\"600\" height=\"400\" viewBox=\"0 0 600 400\">
+          {/* Render edges */}
+          {edges.map((edge, index) => {
+            const fromNode = nodes.find(n => n.id === edge.from);
+            const toNode = nodes.find(n => n.id === edge.to);
+            if (!fromNode || !toNode) return null;
+            
+            const fromIndex = nodes.indexOf(fromNode);
+            const toIndex = nodes.indexOf(toNode);
+            
+            // Simple circular layout
+            const centerX = 300, centerY = 200, radius = 120;
+            const fromAngle = (fromIndex / nodes.length) * 2 * Math.PI;
+            const toAngle = (toIndex / nodes.length) * 2 * Math.PI;
+            
+            const x1 = centerX + radius * Math.cos(fromAngle);
+            const y1 = centerY + radius * Math.sin(fromAngle);
+            const x2 = centerX + radius * Math.cos(toAngle);
+            const y2 = centerY + radius * Math.sin(toAngle);
+            
+            return (
+              <line
+                key={index}
+                x1={x1} y1={y1} x2={x2} y2={y2}
+                stroke=\"#ccc\"
+                strokeWidth={Math.min(edge.weight, 5)}
+                opacity={0.6}
+              />
+            );
+          })}
+          
+          {/* Render nodes */}
+          {nodes.map((node, index) => {
+            const centerX = 300, centerY = 200, radius = 120;
+            const angle = (index / nodes.length) * 2 * Math.PI;
+            const x = centerX + radius * Math.cos(angle);
+            const y = centerY + radius * Math.sin(angle);
+            
+            const isCurrentEmotion = node.id === currentEmotion;
+            const isTargetEmotion = node.id === targetEmotion;
+            const isInPath = pathResult && pathResult.path && pathResult.path.includes(node.id);
+            
+            return (
+              <g key={node.id}>
+                <circle
+                  cx={x} cy={y} r={isCurrentEmotion || isTargetEmotion ? \"25\" : \"20\"}
+                  fill={emotionColors[node.id] || '#808080'}
+                  stroke={isInPath ? '#ff6b35' : (isCurrentEmotion ? '#000' : '#666')}
+                  strokeWidth={isInPath ? \"4\" : (isCurrentEmotion ? \"3\" : \"1\")}
+                  opacity={isInPath ? 1 : 0.8}
+                />
+                <text
+                  x={x} y={y + 5}
+                  textAnchor=\"middle\"
+                  fontSize=\"12\"
+                  fontWeight={isCurrentEmotion ? \"bold\" : \"normal\"}
+                  fill={isCurrentEmotion ? \"#000\" : \"#333\"}
+                >
+                  {node.label}
+                </text>
+                {isCurrentEmotion && (
+                  <text x={x} y={y - 35} textAnchor=\"middle\" fontSize=\"10\" fill=\"#000\">
+                    CURRENT
+                  </text>
+                )}
+                {isTargetEmotion && (
+                  <text x={x} y={y - 35} textAnchor=\"middle\" fontSize=\"10\" fill=\"#000\">
+                    TARGET
+                  </text>
+                )}
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+    );
+  };
+
+  const renderPathResult = () => {
+    if (!pathResult) return null;
+    
+    return (
+      <div className=\"path-result\">
+        <h3>🎯 Optimal Emotional Path</h3>
+        <div className=\"path-info\">
+          <p><strong>Path:</strong> {pathResult.path ? pathResult.path.join(' → ') : 'No path found'}</p>
+          <p><strong>Estimated Success Rate:</strong> {(pathResult.estimated_success_rate * 100).toFixed(1)}%</p>
+          <p><strong>Total Cost:</strong> {pathResult.total_cost?.toFixed(2)}</p>
+        </div>
+        
+        {pathResult.actions && pathResult.actions.length > 0 && (
+          <div className=\"path-actions\">
+            <h4>📋 Recommended Actions:</h4>
+            {pathResult.actions.map((action, index) => (
+              <div key={index} className=\"action-step\">
+                <div className=\"action-transition\">
+                  <strong>{action.from} → {action.to}</strong>
+                </div>
+                <div className=\"action-description\">{action.action}</div>
+                <div className=\"action-success\">
+                  Success Rate: {(action.success_rate * 100).toFixed(1)}%
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className=\"emotional-journey-page\">
+      <div className=\"page-header\">
+        <h1>🧠 AI Emotional Pathfinding</h1>
+        <p>Discover optimal paths between emotional states using A* search algorithm</p>
+      </div>
+
+      <div className=\"ai-controls\">
+        <div className=\"pathfinding-section\">
+          <h2>🔍 Find Optimal Path</h2>
+          <div className=\"emotion-selectors\">
+            <div className=\"selector-group\">
+              <label>Current Emotion:</label>
+              <select 
+                value={currentEmotion} 
+                onChange={(e) => setCurrentEmotion(e.target.value)}
+              >
+                {availableEmotions.map(emotion => (
+                  <option key={emotion} value={emotion}>{emotion}</option>
+                ))}
+              </select>
+            </div>
+            
+            <div className=\"selector-group\">
+              <label>Target Emotion:</label>
+              <select 
+                value={targetEmotion} 
+                onChange={(e) => setTargetEmotion(e.target.value)}
+              >
+                {availableEmotions.map(emotion => (
+                  <option key={emotion} value={emotion}>{emotion}</option>
+                ))}
+              </select>
+            </div>
+            
+            <button 
+              onClick={findOptimalPath}
+              disabled={loading || !currentEmotion || !targetEmotion}
+              className=\"find-path-btn\"
+            >
+              {loading ? 'Finding Path...' : '🎯 Find Optimal Path'}
+            </button>
+          </div>
+        </div>
+
+        <div className=\"text-analysis-section\">
+          <h2>📝 Analyze Text</h2>
+          <div className=\"text-input-group\">
+            <textarea
+              placeholder=\"Enter text to analyze emotional state...\"
+              rows=\"3\"
+              id=\"text-input\"
+            />
+            <button 
+              onClick={() => {
+                const text = document.getElementById('text-input').value;
+                if (text.trim()) {
+                  analyzeText(text);
+                  document.getElementById('text-input').value = '';
+                }
+              }}
+              disabled={loading}
+              className=\"analyze-btn\"
+            >
+              {loading ? 'Analyzing...' : '🔬 Analyze Emotion'}
+            </button>
+          </div>
+        </div>
+
+        <button 
+          onClick={getSuggestions}
+          disabled={loading || !currentEmotion}
+          className=\"suggestions-btn\"
+        >
+          💡 Get Suggestions for {currentEmotion}
+        </button>
+      </div>
+
+      <div className=\"visualization-section\">
+        <h2>🗺️ Emotional Graph Visualization</h2>
+        {loading ? (
+          <div className=\"loading\">Loading graph data...</div>
+        ) : (
+          renderGraph()
+        )}
+      </div>
+
+      {pathResult && renderPathResult()}
+
+      {suggestions.length > 0 && (
+        <div className=\"suggestions-section\">
+          <h3>💡 Personalized Suggestions</h3>
+          <ul className=\"suggestions-list\">
+            {suggestions.map((suggestion, index) => (
+              <li key={index} className=\"suggestion-item\">
+                {suggestion}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className=\"graph-legend\">
+        <h3>🎨 Graph Legend</h3>
+        <div className=\"legend-items\">
+          {Object.entries(emotionColors).map(([emotion, color]) => (
+            <div key={emotion} className=\"legend-item\">
+              <div 
+                className=\"legend-color\" 
+                style={{ backgroundColor: color }}
+              ></div>
+              <span>{emotion}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <style jsx>{`
+        .emotional-journey-page {
+          padding: 20px;
+          max-width: 1200px;
+          margin: 0 auto;
+          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        .page-header {
+          text-align: center;
+          margin-bottom: 30px;
+        }
+
+        .page-header h1 {
+          color: #2c3e50;
+          margin-bottom: 10px;
+        }
+
+        .ai-controls {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 20px;
+          margin-bottom: 30px;
+        }
+
+        .pathfinding-section, .text-analysis-section {
+          background: #f8f9fa;
+          padding: 20px;
+          border-radius: 10px;
+          border: 1px solid #e9ecef;
+        }
+
+        .emotion-selectors {
+          display: flex;
+          flex-direction: column;
+          gap: 15px;
+        }
+
+        .selector-group {
+          display: flex;
+          flex-direction: column;
+          gap: 5px;
+        }
+
+        .selector-group label {
+          font-weight: 600;
+          color: #495057;
+        }
+
+        .selector-group select {
+          padding: 8px;
+          border: 1px solid #ced4da;
+          border-radius: 5px;
+          font-size: 14px;
+        }
+
+        .find-path-btn, .analyze-btn, .suggestions-btn {
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          color: white;
+          border: none;
+          padding: 12px 24px;
+          border-radius: 25px;
+          cursor: pointer;
+          font-weight: 600;
+          transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .find-path-btn:hover, .analyze-btn:hover, .suggestions-btn:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .find-path-btn:disabled, .analyze-btn:disabled, .suggestions-btn:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+          transform: none;
+        }
+
+        .suggestions-btn {
+          grid-column: 1 / -1;
+          justify-self: center;
+          margin-top: 10px;
+        }
+
+        .text-input-group {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
+
+        .text-input-group textarea {
+          padding: 10px;
+          border: 1px solid #ced4da;
+          border-radius: 5px;
+          resize: vertical;
+          font-family: inherit;
+        }
+
+        .visualization-section {
+          background: #ffffff;
+          padding: 20px;
+          border-radius: 10px;
+          border: 1px solid #e9ecef;
+          margin-bottom: 20px;
+          text-align: center;
+        }
+
+        .emotion-graph {
+          display: flex;
+          justify-content: center;
+          margin: 20px 0;
+        }
+
+        .graph-placeholder {
+          padding: 60px;
+          color: #6c757d;
+          font-style: italic;
+        }
+
+        .loading {
+          padding: 40px;
+          color: #6c757d;
+          font-style: italic;
+        }
+
+        .path-result {
+          background: #e8f5e8;
+          padding: 20px;
+          border-radius: 10px;
+          border: 1px solid #c3e6c3;
+          margin-bottom: 20px;
+        }
+
+        .path-info {
+          margin-bottom: 15px;
+        }
+
+        .path-info p {
+          margin: 5px 0;
+        }
+
+        .path-actions {
+          margin-top: 15px;
+        }
+
+        .action-step {
+          background: #f8f9fa;
+          padding: 12px;
+          margin: 8px 0;
+          border-radius: 5px;
+          border-left: 4px solid #28a745;
+        }
+
+        .action-transition {
+          font-weight: 600;
+          color: #495057;
+          margin-bottom: 5px;
+        }
+
+        .action-description {
+          color: #343a40;
+          margin-bottom: 5px;
+        }
+
+        .action-success {
+          font-size: 12px;
+          color: #28a745;
+          font-weight: 600;
+        }
+
+        .suggestions-section {
+          background: #fff3cd;
+          padding: 20px;
+          border-radius: 10px;
+          border: 1px solid #ffeaa7;
+          margin-bottom: 20px;
+        }
+
+        .suggestions-list {
+          list-style: none;
+          padding: 0;
+        }
+
+        .suggestion-item {
+          background: #ffffff;
+          padding: 12px;
+          margin: 8px 0;
+          border-radius: 5px;
+          border-left: 4px solid #ffc107;
+        }
+
+        .graph-legend {
+          background: #f8f9fa;
+          padding: 15px;
+          border-radius: 10px;
+          border: 1px solid #e9ecef;
+        }
+
+        .legend-items {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 15px;
+          margin-top: 10px;
+        }
+
+        .legend-item {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .legend-color {
+          width: 20px;
+          height: 20px;
+          border-radius: 50%;
+          border: 1px solid #ccc;
+        }
+
+        @media (max-width: 768px) {
+          .ai-controls {
+            grid-template-columns: 1fr;
+          }
+          
+          .emotion-selectors {
+            gap: 10px;
+          }
+          
+          .legend-items {
+            justify-content: center;
+          }
+        }
+      `}</style>
+    </div>
+  );
+};
+
+export default EmotionalJourneyGraph;
 ````
 
 ## File: frontend/src/pages/Profile.js
@@ -12131,218 +14087,1567 @@ const Profile = () => {
 export default Profile;
 ````
 
-## File: frontend/src/App.js
+## File: frontend/src/index.js
 ````javascript
-import React, { useEffect } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
-import { CssBaseline, Box } from '@mui/material';
-import { useTheme } from '@mui/material/styles';
-import { useAuth } from './context/AuthContext';
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
 
-// Layout components
-import Header from './components/layout/Header';
-import Footer from './components/layout/Footer';
-
-// Pages
-import Home from './pages/Home';
-import Login from './pages/Login';
-import Register from './pages/Register';
-import Journal from './pages/Journal';
-import Goals from './pages/Goals';
-import Memories from './pages/Memories';
-import Profile from './pages/Profile';
-import NotFound from './pages/NotFound';
-
-// Protected route component
-const ProtectedRoute = ({ children }) => {
-  const { isAuthenticated, loading } = useAuth();
-  
-  if (loading) {
-    return <div>Loading...</div>;
-  }
-  
-  if (!isAuthenticated) {
-    return <Navigate to="/login" replace />;
-  }
-  
-  return children;
-};
-
-function App() {
-  const theme = useTheme();
-  const { checkAuth } = useAuth();
-  
-  useEffect(() => {
-    // Check authentication status when app loads
-    checkAuth();
-    
-    // Register service worker for PWA
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/service-worker.js').then(registration => {
-          console.log('SW registered: ', registration);
-        }).catch(error => {
-          console.log('SW registration failed: ', error);
-        });
-      });
-    }
-  }, [checkAuth]);
-  
-  return (
-    <Box sx={{ 
-      display: 'flex', 
-      flexDirection: 'column', 
-      minHeight: '100vh',
-      backgroundColor: theme.palette.background.default
-    }}>
-      <CssBaseline />
-      <Header />
-      
-      <Box component="main" sx={{ flexGrow: 1 }}>
-        <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
-          <Route path="/journal" element={
-            <ProtectedRoute>
-              <Journal />
-            </ProtectedRoute>
-          } />
-          <Route path="/goals" element={
-            <ProtectedRoute>
-              <Goals />
-            </ProtectedRoute>
-          } />
-          {/* Memories functionality now integrated into Journal */}
-          <Route path="/profile" element={
-            <ProtectedRoute>
-              <Profile />
-            </ProtectedRoute>
-          } />
-          <Route path="*" element={<NotFound />} />
-        </Routes>
-      </Box>
-      
-      <Footer />
-    </Box>
-  );
-}
-
-export default App;
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
 ````
 
-## File: frontend/src/index.css
-````css
-body {
-  margin: 0;
-  font-family: 'Roboto', 'Helvetica Neue', sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  background-color: #f5f5f5;
-}
+## File: frontend/src/IntelligentAgentApp.js
+````javascript
+import React, { useState, useEffect } from 'react';
 
-code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New', monospace;
-}
+const IntelligentAgentApp = () => {
+  const [inputText, setInputText] = useState('');
+  const [conversation, setConversation] = useState([]);
+  const [memoryMap, setMemoryMap] = useState({ nodes: [], edges: [] });
+  const [memoryStats, setMemoryStats] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [showingStepsForm, setShowingStepsForm] = useState(false);
+  const [currentExperienceId, setCurrentExperienceId] = useState('');
+  const [stepsInput, setStepsInput] = useState(['']);
+  const [backendStatus, setBackendStatus] = useState('checking');
 
-/* Scrollbar styling */
-::-webkit-scrollbar {
-  width: 8px;
-}
+  // Try proxy first, fallback to direct API
+  const API_BASE = process.env.NODE_ENV === 'development' ? 'http://localhost:5000/api' : '/api';
 
-::-webkit-scrollbar-track {
-  background: #f1f1f1;
-}
+  // Emotion colors for map visualization
+  const emotionColors = {
+    happy: '#4CAF50',      // Green
+    sad: '#2196F3',        // Blue  
+    anxious: '#FF9800',    // Orange
+    angry: '#F44336',      // Red
+    confused: '#9C27B0',   // Purple
+    tired: '#607D8B',      // Blue Grey
+    neutral: '#9E9E9E'     // Grey
+  };
 
-::-webkit-scrollbar-thumb {
-  background: #888;
-  border-radius: 4px;
-}
+  useEffect(() => {
+    checkBackendStatus();
+  }, []);
 
-::-webkit-scrollbar-thumb:hover {
-  background: #555;
-}
+  const checkBackendStatus = async () => {
+    try {
+      // Try direct connection first
+      let response = await fetch('http://localhost:5000/api/health');
+      let apiBase = 'http://localhost:5000/api';
+      
+      if (!response.ok) {
+        // Try proxy
+        response = await fetch('/api/health');
+        apiBase = '/api';
+      }
+      
+      if (response.ok) {
+        const data = await response.json();
+        setBackendStatus('connected');
+        console.log('✅ Backend connected:', data);
+        
+        // Load initial data
+        await loadMemoryMap(apiBase);
+        await loadMemoryStats(apiBase);
+      } else {
+        setBackendStatus('error');
+      }
+    } catch (error) {
+      console.error('❌ Backend connection failed:', error);
+      setBackendStatus('error');
+    }
+  };
 
-/* Global styles */
-.container {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 0 16px;
-}
+  const makeApiCall = async (endpoint, options = {}) => {
+    // Try direct connection first, then proxy
+    const urls = [
+      `http://localhost:5000/api${endpoint}`,
+      `/api${endpoint}`
+    ];
+    
+    for (const url of urls) {
+      try {
+        const response = await fetch(url, {
+          ...options,
+          headers: {
+            'Content-Type': 'application/json',
+            ...options.headers
+          }
+        });
+        
+        if (response.ok) {
+          return response;
+        }
+      } catch (error) {
+        console.log(`Failed to connect to ${url}:`, error.message);
+      }
+    }
+    
+    throw new Error('Could not connect to backend');
+  };
 
-.page-container {
-  padding: 24px;
-  min-height: calc(100vh - 64px);
-}
+  const loadMemoryMap = async (apiBase = API_BASE) => {
+    try {
+      const response = await makeApiCall('/memory-map');
+      if (response.ok) {
+        const data = await response.json();
+        setMemoryMap(data);
+      }
+    } catch (error) {
+      console.error('Error loading memory map:', error);
+    }
+  };
 
-.chat-bubble {
-  padding: 12px 16px;
-  border-radius: 18px;
-  margin-bottom: 8px;
-  max-width: 80%;
-  word-wrap: break-word;
-}
+  const loadMemoryStats = async (apiBase = API_BASE) => {
+    try {
+      const response = await makeApiCall('/memory-stats');
+      if (response.ok) {
+        const data = await response.json();
+        setMemoryStats(data);
+      }
+    } catch (error) {
+      console.error('Error loading memory stats:', error);
+    }
+  };
 
-.user-bubble {
-  background-color: #e3f2fd;
-  margin-left: auto;
-  border-bottom-right-radius: 4px;
-}
+  const processInput = async () => {
+    if (!inputText.trim()) return;
 
-.ai-bubble {
-  background-color: #f5f5f5;
-  margin-right: auto;
-  border-bottom-left-radius: 4px;
-}
+    setLoading(true);
+    try {
+      const response = await makeApiCall('/process-input', {
+        method: 'POST',
+        body: JSON.stringify({
+          text: inputText,
+          user_id: 'user1'
+        })
+      });
 
-/* Memory card styling */
-.memory-card {
-  border-radius: 12px;
-  transition: transform 0.2s, box-shadow 0.2s;
-  overflow: hidden;
-}
+      if (response.ok) {
+        const agentResponse = await response.json();
+        
+        // Add user input and agent response to conversation
+        setConversation(prev => [
+          ...prev,
+          {
+            type: 'user',
+            text: inputText,
+            timestamp: new Date().toLocaleTimeString()
+          },
+          {
+            type: 'agent',
+            ...agentResponse,
+            timestamp: new Date().toLocaleTimeString()
+          }
+        ]);
 
-.memory-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.1);
-}
+        // Clear input
+        setInputText('');
 
-.memory-card-encouragement {
-  border-left: 4px solid #4caf50;
-}
+        // If agent asks for steps, show steps form
+        if (agentResponse.type === 'ask_for_steps') {
+          setShowingStepsForm(true);
+          setCurrentExperienceId(agentResponse.experience_id);
+          setStepsInput(['']);
+        }
 
-.memory-card-reinforcement {
-  border-left: 4px solid #2196f3;
-}
+        // Reload memory map and stats
+        await loadMemoryMap();
+        await loadMemoryStats();
+      } else {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+    } catch (error) {
+      console.error('Error processing input:', error);
+      
+      // Add error message to conversation
+      setConversation(prev => [
+        ...prev,
+        {
+          type: 'user',
+          text: inputText,
+          timestamp: new Date().toLocaleTimeString()
+        },
+        {
+          type: 'agent',
+          message: `❌ Sorry, I couldn't process your input. Error: ${error.message}. Make sure the backend is running on port 5000.`,
+          timestamp: new Date().toLocaleTimeString()
+        }
+      ]);
+      
+      setInputText('');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-/* Animation classes */
-.fade-in {
-  animation: fadeIn 0.5s ease-in;
-}
+  const saveSteps = async () => {
+    const steps = stepsInput.filter(step => step.trim() !== '');
+    if (steps.length === 0) return;
 
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
+    setLoading(true);
+    try {
+      const response = await makeApiCall('/save-steps', {
+        method: 'POST',
+        body: JSON.stringify({
+          experience_id: currentExperienceId,
+          steps: steps
+        })
+      });
 
-@keyframes slideIn {
-  from {
-    transform: translateY(20px);
-    opacity: 0;
-  }
-  to {
-    transform: translateY(0);
-    opacity: 1;
-  }
-}
+      if (response.ok) {
+        const result = await response.json();
+        
+        // Add confirmation to conversation
+        setConversation(prev => [
+          ...prev,
+          {
+            type: 'agent',
+            message: result.message,
+            timestamp: new Date().toLocaleTimeString()
+          }
+        ]);
 
-.slide-in {
-  animation: slideIn 0.4s ease-out;
+        // Clear steps form
+        setShowingStepsForm(false);
+        setCurrentExperienceId('');
+        setStepsInput(['']);
+
+        // Reload memory map and stats
+        await loadMemoryMap();
+        await loadMemoryStats();
+      } else {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+    } catch (error) {
+      console.error('Error saving steps:', error);
+      alert(`Failed to save steps: ${error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const addStepInput = () => {
+    setStepsInput(prev => [...prev, '']);
+  };
+
+  const updateStepInput = (index, value) => {
+    setStepsInput(prev => {
+      const newSteps = [...prev];
+      newSteps[index] = value;
+      return newSteps;
+    });
+  };
+
+  const removeStepInput = (index) => {
+    setStepsInput(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const resetMemory = async () => {
+    if (window.confirm('Are you sure you want to reset the memory map? This will clear all learned experiences.')) {
+      try {
+        const response = await makeApiCall('/reset-memory', {
+          method: 'POST'
+        });
+
+        if (response.ok) {
+          setConversation([]);
+          setMemoryMap({ nodes: [], edges: [] });
+          setMemoryStats({});
+          alert('Memory map reset successfully!');
+        } else {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+      } catch (error) {
+        console.error('Error resetting memory:', error);
+        alert(`Failed to reset memory: ${error.message}`);
+      }
+    }
+  };
+
+  const renderBackendStatus = () => {
+    const statusInfo = {
+      checking: { color: '#ffc107', text: 'Checking backend...', icon: '🔍' },
+      connected: { color: '#28a745', text: 'Backend connected', icon: '✅' },
+      error: { color: '#dc3545', text: 'Backend not connected', icon: '❌' }
+    };
+
+    const status = statusInfo[backendStatus] || statusInfo.error;
+
+    return (
+      <div style={{
+        background: status.color,
+        color: 'white',
+        padding: '8px 15px',
+        borderRadius: '5px',
+        margin: '10px 0',
+        textAlign: 'center',
+        fontSize: '14px',
+        fontWeight: 'bold'
+      }}>
+        {status.icon} {status.text}
+        {backendStatus === 'error' && (
+          <div style={{fontSize: '12px', marginTop: '5px', fontWeight: 'normal'}}>
+            Make sure to run: ./start-agent.sh or python backend/intelligent_agent.py
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderMemoryMap = () => {
+    const { nodes, edges } = memoryMap;
+    
+    if (!nodes.length) {
+      return (
+        <div style={{
+          textAlign: 'center',
+          padding: '40px',
+          color: '#666',
+          fontStyle: 'italic'
+        }}>
+          No experiences yet. Start by sharing how you're feeling!
+        </div>
+      );
+    }
+
+    // Simple circular layout
+    const centerX = 250;
+    const centerY = 200;
+    const radius = 120;
+    const nodePositions = {};
+
+    // Position nodes in a circle
+    nodes.forEach((node, index) => {
+      const angle = (index / nodes.length) * 2 * Math.PI;
+      nodePositions[node.id] = {
+        x: centerX + radius * Math.cos(angle),
+        y: centerY + radius * Math.sin(angle)
+      };
+    });
+
+    return (
+      <div style={{ position: 'relative', width: '500px', height: '400px', border: '1px solid #ddd', borderRadius: '8px', background: '#f9f9f9' }}>
+        <svg width="500" height="400">
+          {/* Render edges */}
+          {edges.map((edge, index) => {
+            const fromPos = nodePositions[edge.from];
+            const toPos = nodePositions[edge.to];
+            if (!fromPos || !toPos) return null;
+
+            return (
+              <g key={index}>
+                <line
+                  x1={fromPos.x}
+                  y1={fromPos.y}
+                  x2={toPos.x}
+                  y2={toPos.y}
+                  stroke="#999"
+                  strokeWidth={Math.min(edge.weight + 1, 5)}
+                  opacity={0.7}
+                />
+                <text
+                  x={(fromPos.x + toPos.x) / 2}
+                  y={(fromPos.y + toPos.y) / 2}
+                  fill="#666"
+                  fontSize="10"
+                  textAnchor="middle"
+                >
+                  {edge.actions}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Render nodes */}
+          {nodes.map((node) => {
+            const pos = nodePositions[node.id];
+            const color = emotionColors[node.id] || '#999';
+            
+            return (
+              <g key={node.id}>
+                <circle
+                  cx={pos.x}
+                  cy={pos.y}
+                  r={20 + (node.count * 2)}
+                  fill={color}
+                  stroke="#fff"
+                  strokeWidth="2"
+                  opacity={0.8}
+                />
+                <text
+                  x={pos.x}
+                  y={pos.y + 4}
+                  fill="#fff"
+                  fontSize="12"
+                  fontWeight="bold"
+                  textAnchor="middle"
+                >
+                  {node.label}
+                </text>
+                <text
+                  x={pos.x}
+                  y={pos.y + 35}
+                  fill="#333"
+                  fontSize="10"
+                  textAnchor="middle"
+                >
+                  ({node.count})
+                </text>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+    );
+  };
+
+  const renderConversation = () => {
+    return (
+      <div style={{
+        height: '400px',
+        overflowY: 'auto',
+        border: '1px solid #ddd',
+        borderRadius: '8px',
+        padding: '15px',
+        background: '#fff',
+        marginBottom: '15px'
+      }}>
+        {conversation.length === 0 ? (
+          <div style={{ textAlign: 'center', color: '#666', fontStyle: 'italic', marginTop: '150px' }}>
+            👋 Hi! I'm your intelligent agent. Tell me how you're feeling and I'll learn from your experiences to help you better.
+            <br /><br />
+            <div style={{ fontSize: '12px', color: '#999' }}>
+              {backendStatus === 'error' ? 
+                '⚠️ Make sure to start the backend first!' : 
+                '✅ Ready to learn from your experiences!'
+              }
+            </div>
+          </div>
+        ) : (
+          conversation.map((message, index) => (
+            <div key={index} style={{
+              marginBottom: '15px',
+              display: 'flex',
+              flexDirection: message.type === 'user' ? 'row-reverse' : 'row'
+            }}>
+              <div style={{
+                maxWidth: '70%',
+                padding: '10px 15px',
+                borderRadius: '18px',
+                background: message.type === 'user' ? '#007bff' : '#f1f1f1',
+                color: message.type === 'user' ? '#fff' : '#333'
+              }}>
+                <div>{message.message || message.text}</div>
+                <div style={{ fontSize: '11px', opacity: 0.7, marginTop: '5px' }}>
+                  {message.timestamp}
+                </div>
+                {message.suggestions && message.suggestions.length > 0 && (
+                  <div style={{ marginTop: '10px' }}>
+                    <strong>💡 Suggestions:</strong>
+                    <ul style={{ margin: '5px 0', paddingLeft: '15px' }}>
+                      {message.suggestions.map((suggestion, i) => (
+                        <li key={i} style={{ marginBottom: '3px' }}>{suggestion}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    );
+  };
+
+  const renderStepsForm = () => {
+    if (!showingStepsForm) return null;
+
+    return (
+      <div style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        background: 'rgba(0,0,0,0.5)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 1000
+      }}>
+        <div style={{
+          background: '#fff',
+          padding: '30px',
+          borderRadius: '12px',
+          maxWidth: '500px',
+          width: '90%',
+          maxHeight: '80vh',
+          overflowY: 'auto'
+        }}>
+          <h3 style={{ marginTop: 0, color: '#4CAF50' }}>🌟 Share Your Success Steps!</h3>
+          <p>What specific steps or actions led to this positive feeling? This helps me learn and suggest similar actions to help in the future.</p>
+          
+          {stepsInput.map((step, index) => (
+            <div key={index} style={{ marginBottom: '10px', display: 'flex', gap: '10px' }}>
+              <input
+                type="text"
+                value={step}
+                onChange={(e) => updateStepInput(index, e.target.value)}
+                placeholder={`Step ${index + 1}...`}
+                style={{
+                  flex: 1,
+                  padding: '8px 12px',
+                  border: '1px solid #ddd',
+                  borderRadius: '6px'
+                }}
+              />
+              {stepsInput.length > 1 && (
+                <button
+                  onClick={() => removeStepInput(index)}
+                  style={{
+                    padding: '8px',
+                    background: '#f44336',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          ))}
+          
+          <button
+            onClick={addStepInput}
+            style={{
+              padding: '8px 16px',
+              background: '#4CAF50',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              marginRight: '10px'
+            }}
+          >
+            + Add Step
+          </button>
+          
+          <div style={{ marginTop: '20px', display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+            <button
+              onClick={() => setShowingStepsForm(false)}
+              style={{
+                padding: '10px 20px',
+                background: '#666',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: 'pointer'
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={saveSteps}
+              disabled={loading || stepsInput.every(step => !step.trim())}
+              style={{
+                padding: '10px 20px',
+                background: '#4CAF50',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                opacity: (loading || stepsInput.every(step => !step.trim())) ? 0.6 : 1
+              }}
+            >
+              {loading ? 'Saving...' : 'Save Steps'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ padding: '20px', maxWidth: '1200px', margin: '0 auto', fontFamily: 'Arial, sans-serif' }}>
+      <h1 style={{ textAlign: 'center', color: '#333', marginBottom: '10px' }}>
+        🤖 Intelligent Agent with Memory Map
+      </h1>
+      <p style={{ textAlign: 'center', color: '#666', marginBottom: '20px' }}>
+        An AI that learns from your experiences and uses A* search to suggest helpful actions
+      </p>
+
+      {renderBackendStatus()}
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '30px' }}>
+        {/* Left Side - Conversation */}
+        <div>
+          <h2 style={{ color: '#333', marginBottom: '15px' }}>💬 Conversation</h2>
+          
+          {renderConversation()}
+          
+          {/* Input Area */}
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <input
+              type="text"
+              value={inputText}
+              onChange={(e) => setInputText(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && processInput()}
+              placeholder="Tell me how you're feeling... (e.g., 'I'm feeling really happy today' or 'I'm sad and stressed')"
+              style={{
+                flex: 1,
+                padding: '12px',
+                border: '1px solid #ddd',
+                borderRadius: '8px',
+                fontSize: '14px'
+              }}
+              disabled={backendStatus !== 'connected'}
+            />
+            <button
+              onClick={processInput}
+              disabled={loading || !inputText.trim() || backendStatus !== 'connected'}
+              style={{
+                padding: '12px 24px',
+                background: backendStatus === 'connected' ? '#007bff' : '#ccc',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '8px',
+                cursor: backendStatus === 'connected' ? 'pointer' : 'not-allowed',
+                fontWeight: 'bold'
+              }}
+            >
+              {loading ? '🤔' : '💭'}
+            </button>
+          </div>
+
+          {/* Example inputs */}
+          <div style={{ marginTop: '15px', fontSize: '12px', color: '#666' }}>
+            <strong>Try these examples:</strong>
+            <div style={{ marginTop: '5px' }}>
+              • "I'm feeling really happy and excited!"
+            </div>
+            <div>
+              • "I'm sad and don't know what to do"
+            </div>
+            <div>
+              • "I'm feeling anxious about work"
+            </div>
+          </div>
+        </div>
+
+        {/* Right Side - Memory Map */}
+        <div>
+          <h2 style={{ color: '#333', marginBottom: '15px' }}>🗺️ Memory Map</h2>
+          
+          {renderMemoryMap()}
+          
+          {/* Memory Stats */}
+          <div style={{
+            marginTop: '15px',
+            padding: '15px',
+            background: '#f8f9fa',
+            borderRadius: '8px',
+            border: '1px solid #e9ecef'
+          }}>
+            <h4 style={{ margin: '0 0 10px 0', color: '#333' }}>📊 Learning Stats</h4>
+            <div style={{ fontSize: '14px', color: '#666' }}>
+              <div>Total Experiences: <strong>{memoryStats.total_experiences || 0}</strong></div>
+              <div>Emotions Learned: <strong>{memoryStats.emotions_learned || 0}</strong></div>
+              <div>Transitions Learned: <strong>{memoryStats.transitions_learned || 0}</strong></div>
+            </div>
+          </div>
+
+          {/* Legend */}
+          <div style={{
+            marginTop: '15px',
+            padding: '10px',
+            background: '#fff',
+            borderRadius: '8px',
+            border: '1px solid #ddd'
+          }}>
+            <h5 style={{ margin: '0 0 8px 0', color: '#333' }}>🎨 Map Legend</h5>
+            <div style={{ fontSize: '12px', color: '#666' }}>
+              <div>• Circle size = Number of experiences</div>
+              <div>• Line thickness = Number of learned transitions</div>
+              <div>• Numbers on lines = Available action suggestions</div>
+            </div>
+          </div>
+
+          {/* Reset Button */}
+          <button
+            onClick={resetMemory}
+            disabled={backendStatus !== 'connected'}
+            style={{
+              marginTop: '15px',
+              padding: '8px 16px',
+              background: backendStatus === 'connected' ? '#dc3545' : '#ccc',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '6px',
+              cursor: backendStatus === 'connected' ? 'pointer' : 'not-allowed',
+              fontSize: '12px'
+            }}
+          >
+            🗑️ Reset Memory
+          </button>
+        </div>
+      </div>
+
+      {/* How it Works */}
+      <div style={{
+        marginTop: '40px',
+        padding: '20px',
+        background: '#e8f5e8',
+        borderRadius: '10px',
+        border: '1px solid #c3e6c3'
+      }}>
+        <h3 style={{ color: '#2e7d32', marginTop: 0 }}>🧠 How the Intelligent Agent Works</h3>
+        <div style={{ color: '#1b5e20', lineHeight: 1.6 }}>
+          <p><strong>😊 When you share positive emotions:</strong> The agent asks what steps led to that feeling and saves them to its memory map.</p>
+          <p><strong>😢 When you share negative emotions:</strong> The agent uses A* search through its learned experiences to suggest actions that previously helped transition to positive emotions.</p>
+          <p><strong>🗺️ Memory Map Evolution:</strong> Each interaction builds the emotional graph, creating connections between emotions and the actions that successfully bridge them.</p>
+          <p><strong>🎯 A* Search:</strong> The algorithm finds optimal paths through emotional states, suggesting the most effective sequences of actions based on past successes.</p>
+        </div>
+      </div>
+
+      {renderStepsForm()}
+    </div>
+  );
+};
+
+export default IntelligentAgentApp;
+````
+
+## File: frontend/src/SimpleAIDemo.js
+````javascript
+import React, { useState, useEffect } from 'react';
+
+const SimpleAIDemo = () => {
+  const [emotions, setEmotions] = useState([]);
+  const [currentEmotion, setCurrentEmotion] = useState('');
+  const [targetEmotion, setTargetEmotion] = useState('');
+  const [pathResult, setPathResult] = useState(null);
+  const [analysisResult, setAnalysisResult] = useState(null);
+  const [suggestions, setSuggestions] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [testText, setTestText] = useState('');
+  const [backendStatus, setBackendStatus] = useState('checking');
+
+  // Use relative URLs - React proxy will forward to backend
+  const API_BASE = '/api';
+
+  // Emotion colors for visualization
+  const emotionColors = {
+    joy: '#FFD700',
+    sadness: '#4169E1',
+    anger: '#DC143C',
+    fear: '#9932CC',
+    disgust: '#228B22',
+    surprise: '#FF69B4',
+    neutral: '#808080'
+  };
+
+  useEffect(() => {
+    checkBackendStatus();
+    loadEmotions();
+  }, []);
+
+  const checkBackendStatus = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/health`);
+      if (response.ok) {
+        const data = await response.json();
+        setBackendStatus('connected');
+        console.log('✅ Backend connected:', data);
+      } else {
+        setBackendStatus('error');
+      }
+    } catch (error) {
+      setBackendStatus('error');
+      console.error('❌ Backend connection failed:', error);
+    }
+  };
+
+  const loadEmotions = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/emotions/available`);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const data = await response.json();
+      setEmotions(data.emotions);
+      if (data.emotions.length > 0) {
+        setCurrentEmotion(data.emotions[0]);
+        setTargetEmotion('joy');
+      }
+    } catch (error) {
+      console.error('Error loading emotions:', error);
+      setBackendStatus('error');
+    }
+  };
+
+  const analyzeText = async () => {
+    if (!testText.trim()) return;
+    
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_BASE}/emotions/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: testText,
+          user_email: 'demo@example.com'
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      setAnalysisResult(data);
+      setCurrentEmotion(data.primary_emotion);
+      console.log('✅ Emotion analysis result:', data);
+    } catch (error) {
+      console.error('Error analyzing text:', error);
+      alert('Failed to analyze text. Make sure the backend is running on port 5000.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const findPath = async () => {
+    if (!currentEmotion || !targetEmotion) return;
+    
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_BASE}/emotions/path`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          current_emotion: currentEmotion,
+          target_emotion: targetEmotion
+        })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      setPathResult(data);
+      console.log('✅ Path finding result:', data);
+    } catch (error) {
+      console.error('Error finding path:', error);
+      alert('Failed to find path. Make sure the backend is running on port 5000.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getSuggestions = async () => {
+    if (!currentEmotion) return;
+    
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_BASE}/emotions/suggestions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ current_emotion: currentEmotion })
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      setSuggestions(data.suggestions);
+    } catch (error) {
+      console.error('Error getting suggestions:', error);
+      alert('Failed to get suggestions. Make sure the backend is running on port 5000.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const testAlgorithm = async () => {
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_BASE}/test-algorithm`);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      alert('Algorithm test results logged to console. Check browser console for details!');
+      console.log('🧪 Algorithm Test Results:');
+      console.table(data.algorithm_tests);
+      console.log('📊 Summary:', {
+        'Total Tests': data.total_tests,
+        'Algorithm': data.algorithm,
+        'Average Success Rate': (data.average_success_rate * 100).toFixed(1) + '%'
+      });
+    } catch (error) {
+      console.error('Error testing algorithm:', error);
+      alert('Failed to test algorithm. Make sure the backend is running on port 5000.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const renderEmotionCircle = (emotion, isSelected = false, isTarget = false) => (
+    <div
+      key={emotion}
+      style={{
+        width: '60px',
+        height: '60px',
+        borderRadius: '50%',
+        backgroundColor: emotionColors[emotion] || '#ccc',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        margin: '5px',
+        border: isSelected ? '3px solid black' : isTarget ? '3px solid orange' : '1px solid #ccc',
+        fontSize: '12px',
+        fontWeight: isSelected || isTarget ? 'bold' : 'normal',
+        cursor: 'pointer',
+        textAlign: 'center',
+        position: 'relative'
+      }}
+      onClick={() => {
+        if (isTarget) {
+          setTargetEmotion(emotion);
+        } else {
+          setCurrentEmotion(emotion);
+        }
+      }}
+    >
+      {emotion}
+      {isSelected && <div style={{fontSize: '8px', position: 'absolute', top: '70px'}}>CURRENT</div>}
+      {isTarget && <div style={{fontSize: '8px', position: 'absolute', top: '70px'}}>TARGET</div>}
+    </div>
+  );
+
+  const renderPath = () => {
+    if (!pathResult || !pathResult.path) return null;
+    
+    return (
+      <div style={{margin: '20px 0'}}>
+        <h3>🎯 Optimal Path Found!</h3>
+        <div style={{display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '10px 0', flexWrap: 'wrap'}}>
+          {pathResult.path.map((emotion, index) => (
+            <React.Fragment key={index}>
+              {renderEmotionCircle(emotion, emotion === currentEmotion, emotion === targetEmotion)}
+              {index < pathResult.path.length - 1 && (
+                <div style={{margin: '0 10px', fontSize: '20px'}}>→</div>
+              )}
+            </React.Fragment>
+          ))}
+        </div>
+        <div style={{textAlign: 'center', marginTop: '15px'}}>
+          <p><strong>Success Rate:</strong> {(pathResult.estimated_success_rate * 100).toFixed(1)}%</p>
+          <p><strong>Total Cost:</strong> {pathResult.total_cost?.toFixed(2)}</p>
+        </div>
+        
+        {pathResult.actions && pathResult.actions.length > 0 && (
+          <div style={{marginTop: '20px'}}>
+            <h4>📋 Step-by-Step Actions:</h4>
+            {pathResult.actions.map((action, index) => (
+              <div key={index} style={{
+                background: '#f0f8ff',
+                padding: '10px',
+                margin: '5px 0',
+                borderRadius: '5px',
+                borderLeft: '4px solid #4169E1'
+              }}>
+                <div style={{fontWeight: 'bold'}}>{action.from} → {action.to}</div>
+                <div>{action.action}</div>
+                <div style={{fontSize: '12px', color: '#666'}}>
+                  Success Rate: {(action.success_rate * 100).toFixed(1)}%
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderBackendStatus = () => {
+    const statusInfo = {
+      checking: { color: '#ffc107', text: 'Checking backend...', icon: '🔍' },
+      connected: { color: '#28a745', text: 'Backend connected', icon: '✅' },
+      error: { color: '#dc3545', text: 'Backend not connected', icon: '❌' }
+    };
+
+    const status = statusInfo[backendStatus] || statusInfo.error;
+
+    return (
+      <div style={{
+        background: status.color,
+        color: 'white',
+        padding: '8px 15px',
+        borderRadius: '5px',
+        margin: '10px 0',
+        textAlign: 'center',
+        fontSize: '14px',
+        fontWeight: 'bold'
+      }}>
+        {status.icon} {status.text}
+        {backendStatus === 'error' && (
+          <div style={{fontSize: '12px', marginTop: '5px', fontWeight: 'normal'}}>
+            Make sure to run: ./start-backend.sh
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{padding: '20px', maxWidth: '1000px', margin: '0 auto', fontFamily: 'Arial, sans-serif'}}>
+      <h1 style={{textAlign: 'center', color: '#333'}}>
+        🧠 Simple AI Emotional Pathfinding Demo
+      </h1>
+      <p style={{textAlign: 'center', color: '#666', marginBottom: '20px'}}>
+        Algorithm Development Focus - No Docker, No Database, Pure Python + React
+      </p>
+
+      {renderBackendStatus()}
+
+      {/* Text Analysis Section */}
+      <div style={{background: '#f8f9fa', padding: '20px', borderRadius: '10px', marginBottom: '20px'}}>
+        <h2>📝 1. Analyze Text Emotion</h2>
+        <div style={{display: 'flex', gap: '10px', marginBottom: '10px', flexWrap: 'wrap'}}>
+          <input
+            type="text"
+            value={testText}
+            onChange={(e) => setTestText(e.target.value)}
+            placeholder="Enter text to analyze emotion (e.g., 'I feel really excited about this!')"
+            style={{
+              flex: 1,
+              minWidth: '300px',
+              padding: '10px',
+              border: '1px solid #ccc',
+              borderRadius: '5px',
+              fontSize: '14px'
+            }}
+          />
+          <button
+            onClick={analyzeText}
+            disabled={loading || !testText.trim() || backendStatus !== 'connected'}
+            style={{
+              padding: '10px 20px',
+              background: '#007bff',
+              color: 'white',
+              border: 'none',
+              borderRadius: '5px',
+              cursor: 'pointer'
+            }}
+          >
+            {loading ? 'Analyzing...' : 'Analyze'}
+          </button>
+        </div>
+        
+        {analysisResult && (
+          <div style={{background: '#e8f5e8', padding: '15px', borderRadius: '5px', marginTop: '10px'}}>
+            <h4>Analysis Result:</h4>
+            <p><strong>Primary Emotion:</strong> {analysisResult.primary_emotion}</p>
+            <p><strong>Confidence:</strong> {(analysisResult.confidence * 100).toFixed(1)}%</p>
+            <p><strong>Is Positive:</strong> {analysisResult.is_positive ? 'Yes' : 'No'}</p>
+            <div style={{marginTop: '10px'}}>
+              <strong>All Emotion Scores:</strong>
+              <div style={{display: 'flex', flexWrap: 'wrap', gap: '10px', marginTop: '5px'}}>
+                {Object.entries(analysisResult.emotion_scores || {}).map(([emotion, score]) => (
+                  <span key={emotion} style={{
+                    background: emotionColors[emotion] || '#ccc',
+                    color: 'white',
+                    padding: '3px 8px',
+                    borderRadius: '15px',
+                    fontSize: '12px'
+                  }}>
+                    {emotion}: {(score * 100).toFixed(0)}%
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Emotion Selection */}
+      <div style={{background: '#f8f9fa', padding: '20px', borderRadius: '10px', marginBottom: '20px'}}>
+        <h2>🎯 2. Select Emotions for Pathfinding</h2>
+        <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px'}}>
+          <div>
+            <h4>Current Emotion:</h4>
+            <div style={{display: 'flex', flexWrap: 'wrap', justifyContent: 'center'}}>
+              {emotions.map(emotion => renderEmotionCircle(emotion, emotion === currentEmotion, false))}
+            </div>
+          </div>
+          <div>
+            <h4>Target Emotion:</h4>
+            <div style={{display: 'flex', flexWrap: 'wrap', justifyContent: 'center'}}>
+              {emotions.map(emotion => renderEmotionCircle(emotion, false, emotion === targetEmotion))}
+            </div>
+          </div>
+        </div>
+        
+        <div style={{textAlign: 'center', marginTop: '20px'}}>
+          <button
+            onClick={findPath}
+            disabled={loading || !currentEmotion || !targetEmotion || backendStatus !== 'connected'}
+            style={{
+              padding: '15px 30px',
+              background: '#28a745',
+              color: 'white',
+              border: 'none',
+              borderRadius: '25px',
+              cursor: 'pointer',
+              fontSize: '16px',
+              fontWeight: 'bold'
+            }}
+          >
+            {loading ? 'Finding Path...' : '🔍 Find Optimal Path (A* Algorithm)'}
+          </button>
+        </div>
+      </div>
+
+      {/* Path Result */}
+      {pathResult && (
+        <div style={{background: '#e8f5e8', padding: '20px', borderRadius: '10px', marginBottom: '20px'}}>
+          {renderPath()}
+        </div>
+      )}
+
+      {/* Suggestions */}
+      <div style={{background: '#f8f9fa', padding: '20px', borderRadius: '10px', marginBottom: '20px'}}>
+        <h2>💡 3. Get Suggestions</h2>
+        <div style={{textAlign: 'center'}}>
+          <button
+            onClick={getSuggestions}
+            disabled={loading || !currentEmotion || backendStatus !== 'connected'}
+            style={{
+              padding: '10px 20px',
+              background: '#ffc107',
+              color: 'black',
+              border: 'none',
+              borderRadius: '5px',
+              cursor: 'pointer'
+            }}
+          >
+            {loading ? 'Loading...' : `Get Suggestions for ${currentEmotion}`}
+          </button>
+        </div>
+        
+        {suggestions.length > 0 && (
+          <div style={{marginTop: '15px'}}>
+            <h4>Suggestions for {currentEmotion}:</h4>
+            <ul style={{listStyle: 'none', padding: 0}}>
+              {suggestions.map((suggestion, index) => (
+                <li key={index} style={{
+                  background: '#fff3cd',
+                  padding: '10px',
+                  margin: '5px 0',
+                  borderRadius: '5px',
+                  borderLeft: '4px solid #ffc107'
+                }}>
+                  {suggestion}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+
+      {/* Algorithm Testing */}
+      <div style={{background: '#e3f2fd', padding: '20px', borderRadius: '10px', marginBottom: '20px'}}>
+        <h2>🔬 4. Test Algorithm</h2>
+        <p>Run automated tests to verify the A* pathfinding algorithm is working correctly.</p>
+        <div style={{textAlign: 'center'}}>
+          <button
+            onClick={testAlgorithm}
+            disabled={loading || backendStatus !== 'connected'}
+            style={{
+              padding: '10px 20px',
+              background: '#2196F3',
+              color: 'white',
+              border: 'none',
+              borderRadius: '5px',
+              cursor: 'pointer'
+            }}
+          >
+            {loading ? 'Testing...' : '🧪 Run Algorithm Tests'}
+          </button>
+        </div>
+        <p style={{fontSize: '12px', color: '#666', textAlign: 'center', marginTop: '10px'}}>
+          Check browser console (F12) for detailed test results
+        </p>
+      </div>
+
+      {/* Development Info */}
+      <div style={{background: '#f8f9fa', padding: '20px', borderRadius: '10px', border: '1px solid #ddd'}}>
+        <h3>🔧 Development Info</h3>
+        <p><strong>Backend:</strong> Simple Python Flask (proxied via React dev server)</p>
+        <p><strong>Frontend:</strong> Basic React (this page)</p>
+        <p><strong>Storage:</strong> In-memory (no database)</p>
+        <p><strong>Focus:</strong> Algorithm development and testing</p>
+        
+        <div style={{marginTop: '15px'}}>
+          <h4>Key Algorithm Files:</h4>
+          <ul style={{fontSize: '14px', color: '#666'}}>
+            <li><code>backend/simple_app.py</code> - Main backend with A* algorithm</li>
+            <li><code>SimpleEmotionAnalyzer</code> - Text emotion analysis</li>
+            <li><code>AStarPathfinder</code> - A* pathfinding implementation</li>
+          </ul>
+        </div>
+
+        <div style={{marginTop: '15px'}}>
+          <h4>🚀 Quick Commands:</h4>
+          <ul style={{fontSize: '14px', color: '#666'}}>
+            <li><code>./start-simple.sh</code> - Start both frontend and backend</li>
+            <li><code>./start-backend.sh</code> - Start backend only</li>
+            <li><code>./start-frontend.sh</code> - Start frontend only</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default SimpleAIDemo;
+````
+
+## File: frontend/package.json
+````json
+{
+  "name": "simple-reflectly-frontend",
+  "version": "1.0.0",
+  "description": "Simple React frontend for Reflectly AI algorithm development",
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "5.0.1"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  },
+  "eslintConfig": {
+    "extends": [
+      "react-app",
+      "react-app/jest"
+    ]
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  },
+  "proxy": "http://localhost:5000"
 }
+````
+
+## File: backend/models/emotional_graph.py
+````python
+"""
+Simplified Emotional Graph for AI-Focused Reflectly
+Represents and manages emotional state transitions with core AI functionality only.
+"""
+import datetime
+import logging
+from pymongo import MongoClient
+from bson.objectid import ObjectId
+from models.search_algorithm import AStarSearch
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class EmotionalGraph:
+    """
+    Simplified EmotionalGraph focused on AI search algorithms and emotional mapping.
+    """
+    
+    def __init__(self, db):
+        """
+        Initialize the EmotionalGraph with a database connection.
+        
+        Args:
+            db: MongoDB database connection
+        """
+        self.db = db
+        self.emotions_collection = db.emotional_states
+        self.transitions_collection = db.emotional_transitions
+        
+        # Define positive and negative emotions
+        self.positive_emotions = ['joy', 'surprise']
+        self.negative_emotions = ['sadness', 'anger', 'fear', 'disgust']
+        self.neutral_emotions = ['neutral']
+        
+        # Initialize A* search algorithm
+        self.search_algorithm = AStarSearch(self)
+        
+    def record_emotion(self, user_email, emotion_data, entry_id=None):
+        """
+        Record an emotional state for a user.
+        
+        Args:
+            user_email (str): The user's email
+            emotion_data (dict): Emotion analysis data
+            entry_id (str, optional): Associated journal entry ID
+            
+        Returns:
+            str: ID of the recorded emotional state
+        """
+        # Create emotional state document
+        emotion_state = {
+            'user_email': user_email,
+            'primary_emotion': emotion_data.get('primary_emotion', 'neutral'),
+            'is_positive': emotion_data.get('is_positive', False),
+            'emotion_scores': emotion_data.get('emotion_scores', {}),
+            'entry_id': entry_id,
+            'timestamp': datetime.datetime.now()
+        }
+        
+        # Insert into database
+        result = self.emotions_collection.insert_one(emotion_state)
+        emotion_state_id = result.inserted_id
+        
+        # Get previous emotional state to create transition
+        previous_state = self._get_previous_emotional_state(user_email, exclude_id=emotion_state_id)
+        
+        if previous_state:
+            self._record_transition(
+                user_email, 
+                previous_state['primary_emotion'],
+                emotion_data.get('primary_emotion', 'neutral'),
+                previous_state['_id'],
+                emotion_state_id
+            )
+        
+        return str(emotion_state_id)
+    
+    def _get_previous_emotional_state(self, user_email, exclude_id=None):
+        """
+        Get the user's previous emotional state.
+        
+        Args:
+            user_email (str): The user's email
+            exclude_id: ID to exclude from the search
+            
+        Returns:
+            dict: Previous emotional state or None
+        """
+        query = {'user_email': user_email}
+        if exclude_id:
+            query['_id'] = {'$ne': exclude_id}
+            
+        return self.emotions_collection.find_one(
+            query,
+            sort=[('timestamp', -1)]
+        )
+    
+    def _record_transition(self, user_email, from_emotion, to_emotion, from_state_id, to_state_id):
+        """
+        Record a transition between emotional states.
+        
+        Args:
+            user_email (str): The user's email
+            from_emotion (str): Source emotion
+            to_emotion (str): Target emotion
+            from_state_id: Source state ID
+            to_state_id: Target state ID
+            
+        Returns:
+            str: ID of the recorded transition
+        """
+        transition = {
+            'user_email': user_email,
+            'from_emotion': from_emotion,
+            'to_emotion': to_emotion,
+            'from_state_id': str(from_state_id),
+            'to_state_id': str(to_state_id),
+            'timestamp': datetime.datetime.now(),
+            'actions': self._get_default_actions(from_emotion, to_emotion)
+        }
+        
+        result = self.transitions_collection.insert_one(transition)
+        return str(result.inserted_id)
+    
+    def _get_default_actions(self, from_emotion, to_emotion):
+        """Get default actions for a transition."""
+        primary_action = {
+            "description": self._get_default_action(from_emotion, to_emotion),
+            "timestamp": datetime.datetime.now().isoformat(),
+            "success_rate": 0.6
+        }
+        
+        secondary_actions = [
+            {
+                "description": "Practice mindfulness and deep breathing",
+                "timestamp": datetime.datetime.now().isoformat(),
+                "success_rate": 0.5
+            },
+            {
+                "description": "Engage in physical activity",
+                "timestamp": datetime.datetime.now().isoformat(),
+                "success_rate": 0.4
+            }
+        ]
+        
+        return [primary_action] + secondary_actions
+    
+    def _get_default_action(self, from_emotion, to_emotion):
+        """Get a default action for a transition."""
+        actions = {
+            ('sadness', 'joy'): "Engage in activities you enjoy",
+            ('sadness', 'neutral'): "Practice mindfulness",
+            ('anger', 'joy'): "Channel energy into positive activities",
+            ('anger', 'neutral'): "Take deep breaths and count to 10",
+            ('fear', 'joy'): "Focus on positive outcomes",
+            ('fear', 'neutral'): "Ground yourself in the present moment",
+            ('disgust', 'joy'): "Focus on things you appreciate",
+            ('disgust', 'neutral'): "Practice acceptance",
+            ('neutral', 'joy'): "Engage in activities you enjoy",
+            ('joy', 'neutral'): "Practice mindfulness",
+        }
+        
+        return actions.get((from_emotion, to_emotion), "Reflect on your feelings")
+    
+    def get_emotion_history(self, user_email, limit=10):
+        """Get the user's emotion history."""
+        states = list(self.emotions_collection.find(
+            {'user_email': user_email},
+            sort=[('timestamp', -1)],
+            limit=limit
+        ))
+        
+        for state in states:
+            state['_id'] = str(state['_id'])
+            if 'timestamp' in state and isinstance(state['timestamp'], datetime.datetime):
+                state['timestamp'] = state['timestamp'].isoformat()
+        
+        return states
+    
+    def get_suggested_actions(self, user_email, current_emotion):
+        """Get suggested actions for transitioning from the current emotional state."""
+        generic_suggestions = {
+            'sadness': [
+                "Reach out to a friend or family member",
+                "Practice self-care activities",
+                "Listen to uplifting music",
+                "Take a short walk outside"
+            ],
+            'anger': [
+                "Take deep breaths for a few minutes",
+                "Write down your thoughts",
+                "Engage in physical activity",
+                "Practice mindfulness meditation"
+            ],
+            'fear': [
+                "Focus on your breathing",
+                "Challenge negative thoughts",
+                "Talk to someone you trust",
+                "Create a plan to address your concerns"
+            ],
+            'disgust': [
+                "Redirect your attention to something positive",
+                "Practice acceptance",
+                "Engage in a pleasant activity",
+                "Connect with supportive people"
+            ],
+            'neutral': [
+                "Set a goal for today",
+                "Practice gratitude",
+                "Learn something new",
+                "Connect with nature"
+            ],
+            'joy': [
+                "Share your positive experience with others",
+                "Practice gratitude",
+                "Savor the moment",
+                "Set new goals"
+            ],
+            'surprise': [
+                "Reflect on what surprised you",
+                "Consider what you can learn from this experience",
+                "Share your experience with others",
+                "Use this energy for creative activities"
+            ]
+        }
+        
+        return generic_suggestions.get(current_emotion, generic_suggestions['neutral'])
+    
+    def get_emotional_path(self, user_email, current_emotion, target_emotion, max_depth=10):
+        """
+        Get a path from current_emotion to target_emotion using A* search.
+        
+        Args:
+            user_email (str): The user's email
+            current_emotion (str): Current emotional state
+            target_emotion (str): Target emotional state
+            max_depth (int): Maximum path depth
+            
+        Returns:
+            dict: Path information
+        """
+        logger.info(f"Finding optimal path for user {user_email} from {current_emotion} to {target_emotion}")
+        return self.search_algorithm.find_path(user_email, current_emotion, target_emotion, max_depth)
+    
+    def get_user_transitions(self, user_email):
+        """Get all transitions for a user."""
+        transitions = list(self.transitions_collection.find({'user_email': user_email}))
+        
+        for transition in transitions:
+            transition['_id'] = str(transition['_id'])
+            if 'timestamp' in transition and isinstance(transition['timestamp'], datetime.datetime):
+                transition['timestamp'] = transition['timestamp'].isoformat()
+        
+        return transitions
+    
+    def get_available_emotions(self):
+        """Get available emotions."""
+        return self.positive_emotions + self.negative_emotions + self.neutral_emotions
+    
+    def get_successful_transitions(self, user_email):
+        """Get successful transitions for a user."""
+        transitions = self.get_user_transitions(user_email)
+        successful_transitions = {}
+        
+        for transition in transitions:
+            from_emotion = transition.get("from_emotion")
+            to_emotion = transition.get("to_emotion")
+            actions = transition.get("actions", [])
+            
+            if not from_emotion or not to_emotion or not actions:
+                continue
+                
+            success_rates = [action.get("success_rate", 0.5) for action in actions if isinstance(action, dict)]
+            avg_success_rate = sum(success_rates) / len(success_rates) if success_rates else 0.5
+            
+            transition_key = f"{from_emotion}_{to_emotion}"
+            if transition_key not in successful_transitions or avg_success_rate > successful_transitions[transition_key].get("success_rate", 0):
+                successful_transitions[transition_key] = {
+                    "from_emotion": from_emotion,
+                    "to_emotion": to_emotion,
+                    "success_rate": avg_success_rate,
+                    "actions": actions
+                }
+                
+        return successful_transitions
 ````
 
 ## File: backend/models/memory_manager.py
@@ -12797,22 +16102,70 @@ EXPOSE 5002
 CMD ["python", "-m", "flask", "run", "--host=0.0.0.0", "--port=5002"]
 ````
 
-## File: backend/requirements.txt
-````
-flask==2.0.1
-werkzeug==2.0.1
-flask-cors==3.0.10
-pymongo==4.0.1
-redis==4.0.2
-kafka-python==2.0.2
-python-dotenv==0.19.1
-flask-jwt-extended==4.3.1
-gunicorn==20.1.0
-bcrypt==3.2.0
-transformers==4.30.2
-torch==2.0.1
-numpy==1.24.3
-networkx==3.1
+## File: frontend/src/index.css
+````css
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #f5f5f5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.App {
+  min-height: 100vh;
+}
+
+/* Simple button styles */
+button {
+  cursor: pointer;
+  border: none;
+  border-radius: 5px;
+  font-family: inherit;
+  transition: all 0.2s ease;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+/* Simple input styles */
+input, textarea, select {
+  font-family: inherit;
+  border-radius: 5px;
+  border: 1px solid #ddd;
+  padding: 8px;
+}
+
+input:focus, textarea:focus, select:focus {
+  outline: none;
+  border-color: #007bff;
+  box-shadow: 0 0 0 2px rgba(0,123,255,0.25);
+}
+
+/* Utility classes */
+.text-center {
+  text-align: center;
+}
+
+.mb-1 { margin-bottom: 8px; }
+.mb-2 { margin-bottom: 16px; }
+.mb-3 { margin-bottom: 24px; }
+.mt-1 { margin-top: 8px; }
+.mt-2 { margin-top: 16px; }
+.mt-3 { margin-top: 24px; }
 ````
 
 ## File: frontend/Dockerfile
@@ -12831,154 +16184,53 @@ EXPOSE 3000
 CMD ["npm", "start"]
 ````
 
-## File: docker-compose.yml
-````yaml
-version: '3'
+## File: backend/requirements.txt
+````
+# Core Flask dependencies
+Flask==2.3.3
+Flask-CORS==4.0.0
 
-services:
-  frontend:
-    build: ./frontend
-    ports:
-      - "3000:3000"
-    depends_on:
-      - backend
-    networks:
-      - reflectly_network
+# Database
+pymongo==4.5.0
 
-  backend:
-    build: ./backend
-    ports:
-      - "5002:5002"
-    depends_on:
-      - mongodb
-      - redis
-      - kafka
-    environment:
-      - MONGODB_URI=mongodb://mongodb:27017/reflectly
-      - REDIS_URI=redis://redis:6379/0
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - HDFS_NAMENODE=namenode:9000
-      - SPARK_MASTER=spark://spark-master:7077
-    networks:
-      - reflectly_network
-      - hadoop_network
+# Machine Learning & NLP
+transformers==4.33.2
+torch==2.0.1
+numpy==1.24.3
+scikit-learn==1.3.0
 
-  mongodb:
-    image: mongo:4.4
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongodb_data:/data/db
-    networks:
-      - reflectly_network
+# Text processing
+textblob==0.17.1
+nltk==3.8.1
 
-  redis:
-    image: redis:6.2
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    networks:
-      - reflectly_network
+# Utilities
+python-dotenv==1.0.0
+requests==2.31.0
 
-  namenode:
-    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
-    container_name: namenode
-    hostname: namenode
-    volumes:
-      - hadoop_namenode:/hadoop/dfs/name
-    environment:
-      - CLUSTER_NAME=reflectly
-      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
-    ports:
-      - "9870:9870"
-      - "9000:9000"
-    networks:
-      - hadoop_network
+# Authentication (if needed)
+bcrypt==4.0.1
+PyJWT==2.8.0
 
-  datanode:
-    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
-    container_name: datanode
-    hostname: datanode
-    volumes:
-      - hadoop_datanode:/hadoop/dfs/data
-    environment:
-      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
-    depends_on:
-      - namenode
-    networks:
-      - hadoop_network
-    ports:
-      - "9864:9864"
+# Development
+pytest==7.4.2
+pytest-flask==1.2.0
+````
 
-  spark-master:
-    image: bde2020/spark-master:3.3.0-hadoop3.3
-    container_name: spark-master
-    hostname: spark-master
-    ports:
-      - "8080:8080"
-      - "7077:7077"
-    environment:
-      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
-    volumes:
-      - spark_data:/spark/data
-    networks:
-      - hadoop_network
+## File: frontend/src/App.js
+````javascript
+import React from 'react';
+import IntelligentAgentApp from './IntelligentAgentApp';
+import './index.css';
 
-  spark-worker:
-    image: bde2020/spark-worker:3.3.0-hadoop3.3
-    container_name: spark-worker
-    hostname: spark-worker
-    environment:
-      - SPARK_MASTER=spark://spark-master:7077
-      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
-    volumes:
-      - spark_data:/spark/data
-    depends_on:
-      - spark-master
-    networks:
-      - hadoop_network
-    ports:
-      - "8081:8081"
+function App() {
+  return (
+    <div className="App">
+      <IntelligentAgentApp />
+    </div>
+  );
+}
 
-  zookeeper:
-    image: wurstmeister/zookeeper
-    container_name: zookeeper
-    hostname: zookeeper
-    ports:
-      - "2181:2181"
-    networks:
-      - hadoop_network
-
-  kafka:
-    image: wurstmeister/kafka
-    container_name: kafka
-    hostname: kafka
-    ports:
-      - "9092:9092"
-    environment:
-      - KAFKA_ADVERTISED_HOST_NAME=kafka
-      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
-      - KAFKA_CREATE_TOPICS=journal-entries:3:1,emotion-analysis:3:1,emotional-graph-updates:3:1
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    depends_on:
-      - zookeeper
-    networks:
-      - hadoop_network
-
-networks:
-  reflectly_network:
-    driver: bridge
-  hadoop_network:
-    driver: bridge
-
-volumes:
-  mongodb_data:
-  redis_data:
-  hadoop_namenode:
-  hadoop_datanode:
-  spark_data:
+export default App;
 ````
 
 ## File: backend/models/response_generator.py
@@ -13239,697 +16491,6 @@ class ResponseGenerator:
             return all_suggestions
         else:
             return random.sample(all_suggestions, count)
-````
-
-## File: backend/app.py
-````python
-import os
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
-from datetime import timedelta, datetime
-import bcrypt
-from pymongo import MongoClient
-from bson.objectid import ObjectId
-import redis
-import json
-from dotenv import load_dotenv
-from models.emotion_analyzer import EmotionAnalyzer
-from models.response_generator import ResponseGenerator
-from models.goal_tracker import GoalTracker
-from models.emotional_graph import EmotionalGraph
-
-# Custom JSON encoder to handle MongoDB ObjectId and datetime objects
-class MongoJSONEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, ObjectId):
-            return str(obj)
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        return super(MongoJSONEncoder, self).default(obj)
-
-# Load environment variables
-load_dotenv()
-
-# Initialize Flask app
-app = Flask(__name__)
-CORS(app)
-
-# Configure Flask to use our custom JSON encoder
-app.json_encoder = MongoJSONEncoder
-
-# Configure JWT
-app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'dev-secret-key')
-app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=1)
-jwt = JWTManager(app)
-
-# Admin secret key for protected routes
-ADMIN_SECRET = os.environ.get('ADMIN_SECRET', 'admin-secret-key')
-
-# MongoDB connection
-mongo_uri = os.environ.get('MONGODB_URI', 'mongodb://localhost:27017/reflectly')
-mongo_client = MongoClient(mongo_uri)
-db = mongo_client.reflectly
-
-# Redis connection
-redis_uri = os.environ.get('REDIS_URI', 'redis://localhost:6379/0')
-redis_client = redis.from_url(redis_uri)
-
-# Initialize models
-emotion_analyzer = EmotionAnalyzer()
-response_generator = ResponseGenerator()
-goal_tracker = GoalTracker(db)
-emotional_graph = EmotionalGraph(db)
-
-# Mock Kafka producer for local development
-class MockKafkaProducer:
-    def send(self, topic, value):
-        print(f"[MOCK KAFKA] Sending to topic {topic}: {value}")
-        return self
-    
-    def flush(self):
-        pass
-
-kafka_producer = MockKafkaProducer()
-
-# Initialize models
-emotion_analyzer = EmotionAnalyzer()
-response_generator = ResponseGenerator()
-goal_tracker = GoalTracker(db)
-emotional_graph = EmotionalGraph(db)
-
-# Authentication routes
-@app.route('/api/auth/register', methods=['POST'])
-def register():
-    data = request.get_json()
-    
-    # Check if user already exists
-    if db.users.find_one({'email': data['email']}):
-        return jsonify({'message': 'User already exists'}), 409
-    
-    # Hash password
-    hashed_password = bcrypt.hashpw(data['password'].encode('utf-8'), bcrypt.gensalt())
-    
-    # Create user
-    user = {
-        'email': data['email'],
-        'password': hashed_password,
-        'name': data.get('name', ''),
-        'created_at': datetime.now()
-    }
-    
-    db.users.insert_one(user)
-    
-    # Create access token
-    access_token = create_access_token(identity=data['email'])
-    
-    return jsonify({
-        'message': 'User registered successfully',
-        'access_token': access_token
-    }), 201
-
-@app.route('/api/auth/login', methods=['POST'])
-def login():
-    print("Login endpoint called")
-    data = request.get_json()
-    print(f"Login attempt for email: {data.get('email')}")
-    
-    try:
-        # Find user
-        user = db.users.find_one({'email': data['email']})
-        print(f"User found: {user is not None}")
-        
-        if not user:
-            print("User not found")
-            return jsonify({'message': 'Invalid credentials'}), 401
-            
-        # Check password
-        password_match = bcrypt.checkpw(data['password'].encode('utf-8'), user['password'])
-        print(f"Password match: {password_match}")
-        
-        if not password_match:
-            print("Password does not match")
-            return jsonify({'message': 'Invalid credentials'}), 401
-        
-        # Create access token
-        access_token = create_access_token(identity=data['email'])
-        print(f"Access token created successfully")
-        
-        return jsonify({
-            'message': 'Login successful',
-            'access_token': access_token
-        }), 200
-    except Exception as e:
-        print(f"Error during login: {str(e)}")
-        return jsonify({'message': f'Login failed: {str(e)}'}), 500
-
-@app.route('/api/auth/user', methods=['GET'])
-@jwt_required()
-def get_user():
-    user_email = get_jwt_identity()
-    
-    # Find user
-    user = db.users.find_one({'email': user_email})
-    
-    if not user:
-        return jsonify({'message': 'User not found'}), 404
-    
-    # Remove password before sending
-    user.pop('password', None)
-    user['_id'] = str(user['_id'])
-    
-    return jsonify(user), 200
-
-@app.route('/api/user/stats', methods=['GET'])
-@jwt_required()
-def get_user_stats():
-    current_user = get_jwt_identity()
-    
-    # Get user's journal entries
-    entries = list(db.journal_entries.find({'user_email': current_user}))
-    
-    if not entries:
-        # Return default stats if no entries exist
-        return jsonify({
-            'total_entries': 0,
-            'streak_days': 0,
-            'avg_entries_per_day': 0,
-            'emotions': {
-                'joy': 0,
-                'sadness': 0,
-                'anger': 0,
-                'fear': 0,
-                'surprise': 0,
-                'neutral': 100
-            },
-            'entries_timeline': {
-                'dates': [],
-                'counts': []
-            },
-            'emotion_timeline': {
-                'dates': [],
-                'emotions': {
-                    'joy': [],
-                    'sadness': [],
-                    'anger': []
-                }
-            }
-        })
-    
-    # Calculate total entries
-    total_entries = len(entries)
-    
-    # Calculate streak days
-    entries_by_date = {}
-    emotions_count = {
-        'joy': 0,
-        'sadness': 0,
-        'anger': 0,
-        'fear': 0,
-        'surprise': 0,
-        'neutral': 0
-    }
-    
-    # Process entries for stats
-    for entry in entries:
-        # Count emotions
-        if 'emotion' in entry:
-            emotion = entry['emotion']
-            if emotion in emotions_count:
-                emotions_count[emotion] += 1
-            else:
-                emotions_count['neutral'] += 1
-        else:
-            emotions_count['neutral'] += 1
-        
-        # Group entries by date
-        date_str = entry['timestamp'].split('T')[0]  # Get YYYY-MM-DD part
-        if date_str not in entries_by_date:
-            entries_by_date[date_str] = []
-        entries_by_date[date_str].append(entry)
-    
-    # Calculate streak
-    dates = sorted(entries_by_date.keys(), reverse=True)
-    streak_days = 0
-    today = datetime.now().strftime('%Y-%m-%d')
-    
-    if dates and dates[0] == today:
-        streak_days = 1
-        for i in range(len(dates) - 1):
-            date1 = datetime.strptime(dates[i], '%Y-%m-%d')
-            date2 = datetime.strptime(dates[i+1], '%Y-%m-%d')
-            if (date1 - date2).days == 1:
-                streak_days += 1
-            else:
-                break
-    
-    # Calculate average entries per day
-    avg_entries_per_day = round(total_entries / len(entries_by_date), 1) if entries_by_date else 0
-    
-    # Prepare emotion distribution
-    total_emotions = sum(emotions_count.values())
-    emotion_distribution = {}
-    for emotion, count in emotions_count.items():
-        emotion_distribution[emotion] = round((count / total_emotions) * 100) if total_emotions > 0 else 0
-    
-    # Prepare timeline data (last 7 days)
-    last_7_days = []
-    counts = []
-    today = datetime.now()
-    
-    for i in range(6, -1, -1):
-        date = today - timedelta(days=i)
-        date_str = date.strftime('%Y-%m-%d')
-        display_date = date.strftime('%b %d')
-        last_7_days.append(display_date)
-        counts.append(len(entries_by_date.get(date_str, [])))
-    
-    # Prepare emotion timeline data
-    emotion_timeline = {
-        'joy': [],
-        'sadness': [],
-        'anger': []
-    }
-    
-    for i in range(6, -1, -1):
-        date = today - timedelta(days=i)
-        date_str = date.strftime('%Y-%m-%d')
-        
-        day_entries = entries_by_date.get(date_str, [])
-        day_emotions = {'joy': 0, 'sadness': 0, 'anger': 0}
-        
-        for entry in day_entries:
-            emotion = entry.get('emotion', 'neutral')
-            if emotion in day_emotions:
-                day_emotions[emotion] += 1
-        
-        # Convert to percentages
-        total = sum(day_emotions.values())
-        for emotion in emotion_timeline:
-            value = round((day_emotions[emotion] / total) * 100) if total > 0 else 0
-            emotion_timeline[emotion].append(value)
-    
-    return jsonify({
-        'total_entries': total_entries,
-        'streak_days': streak_days,
-        'avg_entries_per_day': avg_entries_per_day,
-        'emotions': emotion_distribution,
-        'entries_timeline': {
-            'dates': last_7_days,
-            'counts': counts
-        },
-        'emotion_timeline': {
-            'dates': last_7_days,
-            'emotions': emotion_timeline
-        }
-    })
-
-# Journal entry routes
-@app.route('/api/journal/entries', methods=['POST'])
-@jwt_required()
-def create_journal_entry():
-    try:
-        print("Received journal entry request")
-        user_email = get_jwt_identity()
-        data = request.get_json()
-        print(f"Request data: {data}")
-        
-        # Validate input data
-        if not data or 'content' not in data:
-            return jsonify({'message': 'Missing content in request'}), 400
-            
-        # Analyze emotion
-        print("Analyzing emotion...")
-        try:
-            emotion_data = emotion_analyzer.analyze(data['content'])
-            print(f"Emotion analysis result: {emotion_data}")
-        except Exception as e:
-            print(f"Error in emotion analysis: {str(e)}")
-            # Provide default emotion data if analysis fails
-            emotion_data = {
-                'primary_emotion': 'neutral',
-                'is_positive': False,
-                'emotion_scores': {}
-            }
-            
-        # Record emotion in emotional graph
-        try:
-            print("Recording emotion in emotional graph...")
-            emotion_state_id = emotional_graph.record_emotion(user_email, emotion_data)
-            print(f"Recorded emotion state: {emotion_state_id}")
-            # Add emotional state ID to emotion data
-            emotion_data['emotion_state_id'] = emotion_state_id
-        except Exception as e:
-            print(f"Error recording emotion in graph: {str(e)}")
-        
-        # Create journal entry object
-        entry = {
-            'user_email': user_email,
-            'content': data['content'],
-            'emotion': emotion_data,
-            'created_at': datetime.now(),
-            'isUserMessage': data.get('isUserMessage', True)
-        }
-        
-        # Memory functionality removed as requested
-        memories = []
-        
-        # Get user's emotional history for context
-        print("Retrieving emotional history...")
-        try:
-            emotion_history = emotional_graph.get_emotion_history(user_email, limit=5)
-            print(f"Retrieved {len(emotion_history)} emotional history records")
-        except Exception as e:
-            print(f"Error retrieving emotional history: {str(e)}")
-            emotion_history = []
-        
-        # Get personalized suggested actions from emotional graph
-        print("Getting personalized suggested actions...")
-        try:
-            suggested_actions = emotional_graph.get_suggested_actions(user_email, emotion_data['primary_emotion'])
-            print(f"Suggested actions: {suggested_actions}")
-        except Exception as e:
-            print(f"Error getting suggested actions: {str(e)}")
-            suggested_actions = ["Take a moment to breathe", "Write down your thoughts", "Connect with a friend"]
-        
-        # Generate personalized response with emotional history
-        print("Generating personalized response...")
-        try:
-            response_obj = response_generator.generate_with_memory(
-                data['content'], 
-                emotion_data, 
-                memories=memories, 
-                suggested_actions=suggested_actions,
-                emotion_history=emotion_history
-            )
-            print(f"Generated response object: {response_obj}")
-        except Exception as e:
-            print(f"Error generating response: {str(e)}")
-            response_obj = {
-                'text': 'I appreciate your entry. How are you feeling about this?', 
-                'suggested_actions': suggested_actions
-            }
-        
-        # Store user entry in database
-        print(f"Created user entry object: {entry}")
-        result = db.journal_entries.insert_one(entry)
-        user_entry_id = result.inserted_id
-        print(f"MongoDB insert result for user entry: {user_entry_id}")
-        
-        # Create and store AI response as a separate entry
-        ai_entry = {
-            'user_email': user_email,
-            'content': response_obj['text'],
-            'created_at': datetime.now(),
-            'isUserMessage': False,
-            'parent_entry_id': str(user_entry_id)
-        }
-        
-        ai_result = db.journal_entries.insert_one(ai_entry)
-        print(f"MongoDB insert result for AI response: {ai_result.inserted_id}")
-        
-        # Memory functionality removed as requested
-        memory_entry_id = None
-        
-        # Send to Kafka for processing
-        kafka_data = {
-            'entry_id': str(result.inserted_id),
-            'user_email': user_email,
-            'content': data['content'],
-            'emotion': emotion_data,
-            'emotion_state_id': emotion_data.get('emotion_state_id')
-        }
-        print(f"Sending to Kafka: {kafka_data}")
-        kafka_producer.send('journal-entries', kafka_data)
-        
-        # Memory functionality removed as requested
-        
-        response_data = {
-            'message': 'Journal entry created',
-            'entry_id': str(user_entry_id),
-            'response_id': str(ai_result.inserted_id),
-            'response': {
-                'text': response_obj['text'],
-                'suggested_actions': response_obj.get('suggested_actions', [])
-            }
-        }
-        print(f"Sending response: {response_data}")
-        return jsonify(response_data), 201
-    except Exception as e:
-        print(f"Error in create_journal_entry: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/journal/entries', methods=['GET'])
-@jwt_required()
-def get_journal_entries():
-    user_email = get_jwt_identity()
-    
-    # Get entries from database - sort by created_at in ascending order (oldest first)
-    entries = list(db.journal_entries.find({'user_email': user_email}).sort('created_at', 1))
-    
-    # Convert ObjectId to string
-    for entry in entries:
-        entry['_id'] = str(entry['_id'])
-    
-    return jsonify(entries), 200
-
-# Goal routes
-@app.route('/api/goals', methods=['POST'])
-@jwt_required()
-def create_goal():
-    user_email = get_jwt_identity()
-    data = request.get_json()
-    
-    # Create goal
-    goal = {
-        'user_email': user_email,
-        'title': data['title'],
-        'description': data.get('description', ''),
-        'target_date': data.get('target_date'),
-        'progress': 0,
-        'created_at': datetime.now()
-    }
-    
-    result = db.goals.insert_one(goal)
-    
-    return jsonify({
-        'message': 'Goal created',
-        'goal_id': str(result.inserted_id)
-    }), 201
-
-@app.route('/api/goals', methods=['GET'])
-@jwt_required()
-def get_goals():
-    user_email = get_jwt_identity()
-    
-    # Get goals from database
-    goals = list(db.goals.find({'user_email': user_email}))
-    
-    # Convert ObjectId to string
-    for goal in goals:
-        goal['_id'] = str(goal['_id'])
-    
-    return jsonify(goals), 200
-
-@app.route('/api/goals/<goal_id>/progress', methods=['PUT'])
-@jwt_required()
-def update_goal_progress(goal_id):
-    user_email = get_jwt_identity()
-    data = request.get_json()
-    
-    # Update goal progress
-    db.goals.update_one(
-        {'_id': ObjectId(goal_id), 'user_email': user_email},
-        {'$set': {'progress': data['progress']}}
-    )
-    
-    # Check if goal is completed
-    if data['progress'] >= 100:
-        # Send to Kafka for achievement processing
-        kafka_producer.send('goal-achievements', {
-            'goal_id': goal_id,
-            'user_email': user_email
-        })
-    
-    return jsonify({'message': 'Goal progress updated'}), 200
-
-# Memory routes
-# Memory routes have been removed as requested
-
-# Admin routes for user management
-@app.route('/api/admin/users', methods=['GET'])
-def admin_list_users():
-    # Check admin secret key
-    auth_header = request.headers.get('X-Admin-Key')
-    if not auth_header or auth_header != ADMIN_SECRET:
-        return jsonify({'message': 'Unauthorized'}), 401
-    
-    # List all users
-    users = list(db.users.find({}, {'password': 0}))
-    for user in users:
-        user['_id'] = str(user['_id'])
-    
-    return jsonify(users), 200
-
-@app.route('/api/admin/users', methods=['POST'])
-def admin_create_user():
-    # Check admin secret key
-    auth_header = request.headers.get('X-Admin-Key')
-    if not auth_header or auth_header != ADMIN_SECRET:
-        return jsonify({'message': 'Unauthorized'}), 401
-    
-    data = request.get_json()
-    
-    # Validate required fields
-    if not all(k in data for k in ['email', 'password', 'name']):
-        return jsonify({'message': 'Missing required fields'}), 400
-    
-    # Check if user already exists
-    existing_user = db.users.find_one({'email': data['email']})
-    if existing_user:
-        return jsonify({'message': f"User with email {data['email']} already exists"}), 400
-    
-    # Hash the password
-    hashed_password = bcrypt.hashpw(data['password'].encode('utf-8'), bcrypt.gensalt())
-    
-    # Create user document
-    user = {
-        'email': data['email'],
-        'password': hashed_password,
-        'name': data['name'],
-        'created_at': datetime.utcnow()
-    }
-    
-    # Insert into database
-    result = db.users.insert_one(user)
-    
-    if result.inserted_id:
-        return jsonify({'message': f"User {data['email']} created successfully"}), 201
-    else:
-        return jsonify({'message': 'Failed to create user'}), 500
-
-@app.route('/api/admin/users/<email>', methods=['DELETE'])
-def admin_delete_user(email):
-    # Check admin secret key
-    auth_header = request.headers.get('X-Admin-Key')
-    if not auth_header or auth_header != ADMIN_SECRET:
-        return jsonify({'message': 'Unauthorized'}), 401
-    
-    # Delete user
-    result = db.users.delete_one({'email': email})
-    
-    if result.deleted_count > 0:
-        return jsonify({'message': f'User {email} deleted successfully'}), 200
-    else:
-        return jsonify({'message': f'User with email {email} not found'}), 404
-
-@app.route('/api/admin/db', methods=['GET'])
-def admin_view_db():
-    # Check admin secret key
-    auth_header = request.headers.get('X-Admin-Key')
-    if not auth_header or auth_header != ADMIN_SECRET:
-        return jsonify({'message': 'Unauthorized'}), 401
-    
-    # Get all collections in the database
-    collections = db.list_collection_names()
-    
-    # Get document counts for each collection
-    collection_counts = {}
-    collection_samples = {}
-    
-    for collection in collections:
-        collection_counts[collection] = db[collection].count_documents({})
-        # Get all documents
-        samples = []
-        for doc in db[collection].find():
-            # Convert ObjectId to string
-            doc['_id'] = str(doc['_id'])
-            # Convert binary data to string representation
-            if 'password' in doc and isinstance(doc['password'], bytes):
-                doc['password'] = 'HASHED_PASSWORD_BINARY'
-            samples.append(doc)
-        collection_samples[collection] = samples
-    
-    return jsonify({
-        'database': 'reflectly',
-        'collections': collections,
-        'counts': collection_counts,
-        'samples': collection_samples
-    }), 200
-
-# Emotional Journey Graph route
-@app.route('/api/emotional-journey', methods=['GET'])
-@jwt_required()
-def get_emotional_journey():
-    current_user = get_jwt_identity()
-    
-    # Get user's journal entries
-    entries = list(db.journal_entries.find({'user_email': current_user}))
-    
-    if not entries:
-        # Return empty data if no entries exist
-        return jsonify({
-            'nodes': [],
-            'edges': [],
-            'optimalPath': []
-        })
-    
-    # Process entries to create nodes (emotional states)
-    nodes = []
-    for entry in entries:
-        emotion = entry.get('emotion', 'neutral')
-        timestamp = entry.get('created_at', datetime.now())
-        entry_id = str(entry.get('_id'))
-        
-        nodes.append({
-            'id': entry_id,
-            'emotion': emotion,
-            'timestamp': timestamp
-        })
-    
-    # Create edges between consecutive emotional states
-    edges = []
-    for i in range(len(nodes) - 1):
-        edges.append({
-            'source': nodes[i]['id'],
-            'target': nodes[i + 1]['id'],
-            'weight': 1  # Simple weight for demonstration
-        })
-    
-    # Generate a simple optimal path (in a real app, this would use more sophisticated algorithms)
-    # Here we're just showing a path from the most negative to most positive emotions
-    emotion_ranking = {
-        'angry': 1,
-        'sad': 2,
-        'anxious': 3,
-        'frustrated': 4,
-        'worried': 5,
-        'neutral': 6,
-        'calm': 7,
-        'content': 8,
-        'excited': 9,
-        'happy': 10
-    }
-    
-    # Extract unique emotions from entries
-    unique_emotions = set(node['emotion'] for node in nodes)
-    
-    # Sort emotions by ranking
-    sorted_emotions = sorted(list(unique_emotions), key=lambda e: emotion_ranking.get(e.lower(), 0))
-    
-    # If we have positive emotions, create a path
-    optimalPath = sorted_emotions if sorted_emotions else []
-    
-    return jsonify({
-        'nodes': nodes,
-        'edges': edges,
-        'optimalPath': optimalPath
-    })
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5002, debug=True)
 ````
 
 ## File: frontend/src/pages/Journal.js
@@ -14421,4 +16982,567 @@ const Journal = () => {
 };
 
 export default Journal;
+````
+
+## File: docker-compose.yml
+````yaml
+# Simple Reflectly AI - No Docker Needed!
+
+This project now uses a simplified setup without Docker.
+
+## Quick Start:
+```bash
+# One command to start everything
+chmod +x start-simple.sh
+./start-simple.sh
+```
+
+## Requirements:
+- Python 3.7+
+- Node.js 16+
+- npm
+
+## What was removed:
+- docker-compose.yml (replaced with simple scripts)
+- Dockerfiles (no containerization needed)
+- Complex orchestration (direct Python/Node execution)
+
+## Benefits:
+- Faster startup (no container building)
+- Easier debugging (direct access to processes)
+- Simpler development (direct file editing)
+- No Docker installation required
+- Native performance (no container overhead)
+
+For the previous Docker setup, check the earlier commits in this branch.
+````
+
+## File: README.md
+````markdown
+# Intelligent Agent with Memory Map
+
+> **Learning AI System**: An intelligent agent that learns from your emotional experiences and uses A* search to suggest helpful actions
+
+## 🎯 **What Does This Do?**
+
+This is a focused implementation of an intelligent agent that:
+
+1. **📝 Analyzes your emotional text input** (happy, sad, anxious, etc.)
+2. **🧠 Learns from positive experiences** by asking what steps led to good feelings
+3. **💡 Suggests helpful actions** for negative emotions using A* search through learned experiences
+4. **🗺️ Evolves a memory map** that grows smarter with each interaction
+
+## 🤖 **How the Intelligent Agent Works**
+
+### **When you input POSITIVE emotions (happy, excited):**
+- 🤔 Agent asks: *"What steps led to this positive feeling?"*
+- 💾 Saves your successful actions to memory map
+- 🔗 Creates connections between emotions and successful strategies
+
+### **When you input NEGATIVE emotions (sad, anxious, angry):**
+- 🔍 Agent uses **A* search** through memory map
+- 🎯 Finds optimal path from current emotion to positive emotions
+- 💡 Suggests actions that previously worked for similar situations
+
+### **Memory Map Evolution:**
+- 🌱 Starts empty, grows with each interaction
+- 📈 Learns patterns of successful emotional transitions
+- 🧭 Guides future suggestions using past successes
+
+## 🚀 **Quick Start**
+
+### **Prerequisites**
+- Python 3.7+
+- Node.js 16+
+
+### **One-Command Start**
+```bash
+# Clone and switch to intelligent agent branch
+git clone https://github.com/iNVISIBLExtanx/reflectly.git
+cd reflectly
+git checkout intelligent-agent-memory
+
+# Start the intelligent agent system
+chmod +x start-intelligent-agent.sh
+./start-intelligent-agent.sh
+```
+
+**Access at**: http://localhost:3000
+
+## 🧪 **Try These Examples**
+
+### **1. Teach the Agent (Positive Input)**
+**Input**: *"I'm feeling really happy and excited today!"*
+**Agent Response**: *"What steps led to this positive feeling?"*
+**Your Steps**: 
+- "Went for a morning run"
+- "Had coffee with a friend" 
+- "Listened to my favorite music"
+
+### **2. Get Suggestions (Negative Input)**
+**Input**: *"I'm feeling sad and don't know what to do"*
+**Agent Response**: *"Based on past experiences, try these actions..."*
+**Suggestions**: 
+- "Go for a morning run" (learned from previous success)
+- "Have coffee with a friend" 
+- "Listen to your favorite music"
+
+### **3. Watch Memory Map Evolve**
+- Circle sizes grow with more experiences
+- Lines connect emotions based on successful transitions
+- Numbers show available learned actions
+
+## 🗺️ **Memory Map Visualization**
+
+The interactive memory map shows:
+- **🟢 Green circles**: Positive emotions (happy)
+- **🔴 Red circles**: Negative emotions (sad, anxious, angry)
+- **⚪ Gray circles**: Neutral emotions
+- **➡️ Lines**: Learned transitions between emotions
+- **📊 Numbers**: Count of available action suggestions
+
+## 🧠 **A* Search Algorithm**
+
+The agent uses A* search to:
+1. **Start** from current negative emotion
+2. **Search** through memory map for paths to positive emotions
+3. **Find optimal route** based on past success rates
+4. **Suggest actions** from the most successful transitions
+
+**Example Path**: `sad → neutral → happy`
+- Suggests actions that previously helped transition `sad → neutral`
+- Then actions that helped transition `neutral → happy`
+
+## 📁 **Simple Architecture**
+
+```
+intelligent-agent-memory/
+├── backend/
+│   └── intelligent_agent.py     # 🤖 Complete agent with A* search
+├── frontend/
+│   └── src/
+│       ├── IntelligentAgentApp.js   # 🗺️ Memory map visualization
+│       └── App.js                   # ⚛️ Simple wrapper
+├── start-intelligent-agent.sh      # 🚀 One-command startup
+└── README.md                       # 📖 This guide
+```
+
+## 🔧 **API Endpoints**
+
+### **Process User Input**
+```bash
+curl -X POST http://localhost:5000/api/process-input \
+  -H "Content-Type: application/json" \
+  -d '{"text": "I feel really happy today!", "user_id": "user1"}'
+```
+
+### **Save Successful Steps**
+```bash
+curl -X POST http://localhost:5000/api/save-steps \
+  -H "Content-Type: application/json" \
+  -d '{"experience_id": "abc123", "steps": ["Went for a run", "Called a friend"]}'
+```
+
+### **Get Memory Map Data**
+```bash
+curl http://localhost:5000/api/memory-map
+```
+
+## 💻 **Development & Customization**
+
+### **Add New Emotions**
+```python
+# In EmotionAnalyzer.__init__()
+self.emotion_keywords = {
+    'happy': ['happy', 'joyful', 'excited'],
+    'proud': ['proud', 'accomplished', 'successful'],  # Add new emotion
+    # ... existing emotions
+}
+```
+
+### **Modify A* Search**
+```python
+# In IntelligentAgent._astar_search_for_actions()
+# Customize the search algorithm:
+# - Change cost functions
+# - Adjust heuristics  
+# - Add path preferences
+```
+
+### **Enhance Memory Learning**
+```python
+# In IntelligentAgent.save_successful_steps()
+# Modify how steps are stored and weighted:
+# - Add success rate tracking
+# - Implement step effectiveness scoring
+# - Add temporal decay for old experiences
+```
+
+## 🎮 **Interactive Features**
+
+### **Conversation Interface**
+- 💬 Chat-like interface with the intelligent agent
+- 📝 Natural language input processing
+- 🤖 Contextual responses based on emotion type
+- ⏰ Timestamped conversation history
+
+### **Memory Map Visualization**
+- 🎨 Color-coded emotional states
+- 📏 Dynamic sizing based on experience count
+- 🔗 Visual connections showing learned transitions
+- 📊 Real-time learning statistics
+
+### **Learning System**
+- 📚 Automatic experience categorization
+- 💾 Persistent memory storage (session-based)
+- 🔄 Continuous map evolution
+- 🎯 Personalized suggestion improvement
+
+## 🔬 **Algorithm Details**
+
+### **Emotion Classification**
+- **Method**: Keyword-based analysis with scoring
+- **Emotions**: 7 categories (happy, sad, anxious, angry, confused, tired, neutral)
+- **Output**: Primary emotion + confidence score
+
+### **A* Search Implementation**
+- **Goal**: Find optimal path to positive emotions
+- **Heuristic**: Distance to target emotional state
+- **Cost**: Inverse of historical success rate
+- **Path**: Sequence of emotions and actions
+
+### **Memory Management**
+- **Storage**: In-memory dictionary structures
+- **Indexing**: By emotion type and transition pairs
+- **Retrieval**: O(1) lookup for common patterns
+- **Evolution**: Continuous learning from new experiences
+
+## 🎯 **Use Cases**
+
+### **Personal Emotional Learning**
+- Track what makes you happy and apply it when sad
+- Build personal emotional intelligence
+- Discover effective coping strategies
+
+### **AI Research & Development**
+- Study human emotional patterns
+- Test reinforcement learning approaches
+- Develop personalized recommendation systems
+
+### **Educational Demonstrations**
+- Show A* search in practical applications
+- Demonstrate machine learning concepts
+- Illustrate graph theory in psychology
+
+## 📊 **Learning Metrics**
+
+The system tracks:
+- **Total Experiences**: Number of emotional inputs processed
+- **Emotions Learned**: Unique emotional states encountered  
+- **Transitions Learned**: Successful emotional pathways discovered
+- **Success Rate**: Effectiveness of suggested actions
+
+## 🛠️ **Troubleshooting**
+
+### **Agent Not Learning**
+- Make sure you provide steps when asked after positive emotions
+- Check that memory map shows connections between emotions
+- Verify backend is saving experiences (check learning stats)
+
+### **No Suggestions for Negative Emotions**
+- First input positive emotions and teach successful steps
+- The agent needs learned experiences to make suggestions
+- Use "Reset Memory" to start fresh if needed
+
+### **Memory Map Not Updating**
+- Check browser console for API errors
+- Ensure backend is running on port 5000
+- Try refreshing the page to reload memory data
+
+## 🔮 **Future Enhancements**
+
+### **Advanced Learning**
+- Weight actions by success frequency
+- Implement temporal decay for old experiences
+- Add user feedback on suggestion effectiveness
+
+### **Improved Search**
+- Multi-objective optimization (time, effort, success rate)
+- Dynamic cost adjustment based on user feedback
+- Context-aware pathfinding (time of day, situation)
+
+### **Enhanced Visualization**
+- 3D memory map representation
+- Animated transition paths
+- Historical timeline view
+- Success rate heat maps
+
+---
+
+**This intelligent agent demonstrates how AI can learn from human experiences and use graph algorithms to provide personalized emotional support. The memory map evolves with each interaction, becoming a more effective guide over time.** 🧠✨
+
+**Start learning**: `./start-intelligent-agent.sh` 🚀
+````
+
+## File: backend/app.py
+````python
+"""
+Simplified Reflectly Flask App - AI-Focused Version
+Contains only the core AI functionality for emotional pathfinding and analysis.
+"""
+import os
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from pymongo import MongoClient
+from models.emotional_graph import EmotionalGraph
+from models.emotion_analyzer import EmotionAnalyzer
+from models.memory_manager import MemoryManager
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize Flask app
+app = Flask(__name__)
+CORS(app)
+
+# MongoDB connection
+mongo_uri = os.environ.get('MONGODB_URI', 'mongodb://localhost:27017/reflectly')
+mongo_client = MongoClient(mongo_uri)
+db = mongo_client.reflectly
+
+# Initialize AI models
+emotional_graph = EmotionalGraph(db)
+emotion_analyzer = EmotionAnalyzer()
+memory_manager = MemoryManager(db)
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({"status": "healthy", "service": "reflectly-ai"})
+
+@app.route('/api/emotions/analyze', methods=['POST'])
+def analyze_emotion():
+    """Analyze emotion from text input"""
+    try:
+        data = request.get_json()
+        text = data.get('text', '')
+        user_email = data.get('user_email', '')
+        
+        if not text:
+            return jsonify({"error": "Text is required"}), 400
+            
+        # Analyze emotion
+        emotion_result = emotion_analyzer.analyze_emotion(text)
+        
+        # Record emotion if user_email provided
+        if user_email:
+            emotion_id = emotional_graph.record_emotion(user_email, emotion_result)
+            emotion_result['emotion_id'] = emotion_id
+            
+        return jsonify(emotion_result)
+        
+    except Exception as e:
+        logger.error(f"Error analyzing emotion: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/api/emotions/path', methods=['POST'])
+def find_emotional_path():
+    """Find optimal path between emotions using A* search"""
+    try:
+        data = request.get_json()
+        user_email = data.get('user_email', '')
+        current_emotion = data.get('current_emotion', '')
+        target_emotion = data.get('target_emotion', '')
+        max_depth = data.get('max_depth', 10)
+        
+        if not all([user_email, current_emotion, target_emotion]):
+            return jsonify({"error": "user_email, current_emotion, and target_emotion are required"}), 400
+            
+        # Find optimal path
+        path_result = emotional_graph.get_emotional_path(
+            user_email, current_emotion, target_emotion, max_depth
+        )
+        
+        return jsonify(path_result)
+        
+    except Exception as e:
+        logger.error(f"Error finding emotional path: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/api/emotions/suggestions', methods=['POST'])
+def get_emotion_suggestions():
+    """Get personalized action suggestions for current emotion"""
+    try:
+        data = request.get_json()
+        user_email = data.get('user_email', '')
+        current_emotion = data.get('current_emotion', '')
+        
+        if not all([user_email, current_emotion]):
+            return jsonify({"error": "user_email and current_emotion are required"}), 400
+            
+        # Get suggestions
+        suggestions = emotional_graph.get_suggested_actions(user_email, current_emotion)
+        
+        return jsonify({"suggestions": suggestions})
+        
+    except Exception as e:
+        logger.error(f"Error getting emotion suggestions: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/api/emotions/history/<user_email>', methods=['GET'])
+def get_emotion_history(user_email):
+    """Get user's emotion history"""
+    try:
+        limit = request.args.get('limit', 10, type=int)
+        
+        # Get emotion history
+        history = emotional_graph.get_emotion_history(user_email, limit)
+        
+        return jsonify({"history": history})
+        
+    except Exception as e:
+        logger.error(f"Error getting emotion history: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/api/emotions/transitions/<user_email>', methods=['GET'])
+def get_user_transitions(user_email):
+    """Get user's emotional transitions for graph visualization"""
+    try:
+        # Get transitions
+        transitions = emotional_graph.get_user_transitions(user_email)
+        
+        # Get available emotions for graph nodes
+        available_emotions = emotional_graph.get_available_emotions()
+        
+        return jsonify({
+            "transitions": transitions,
+            "emotions": available_emotions
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting user transitions: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/api/emotions/graph-data/<user_email>', methods=['GET'])
+def get_graph_data(user_email):
+    """Get formatted data for emotional journey graph visualization"""
+    try:
+        # Get transitions
+        transitions = emotional_graph.get_user_transitions(user_email)
+        
+        # Get emotion history
+        history = emotional_graph.get_emotion_history(user_email, 50)
+        
+        # Format for graph visualization
+        nodes = set()
+        edges = []
+        
+        # Create nodes from emotions
+        for emotion in emotional_graph.get_available_emotions():
+            nodes.add(emotion)
+            
+        # Create edges from transitions
+        for transition in transitions:
+            from_emotion = transition.get('from_emotion')
+            to_emotion = transition.get('to_emotion')
+            
+            if from_emotion and to_emotion:
+                # Calculate edge weight based on frequency
+                edge_exists = False
+                for edge in edges:
+                    if edge['from'] == from_emotion and edge['to'] == to_emotion:
+                        edge['weight'] += 1
+                        edge_exists = True
+                        break
+                        
+                if not edge_exists:
+                    edges.append({
+                        'from': from_emotion,
+                        'to': to_emotion,
+                        'weight': 1,
+                        'actions': transition.get('actions', [])
+                    })
+        
+        # Convert nodes set to list of objects
+        node_list = [{'id': emotion, 'label': emotion.title()} for emotion in nodes]
+        
+        return jsonify({
+            "nodes": node_list,
+            "edges": edges,
+            "history": history
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting graph data: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/api/emotions/available', methods=['GET'])
+def get_available_emotions():
+    """Get list of available emotions"""
+    try:
+        emotions = emotional_graph.get_available_emotions()
+        return jsonify({"emotions": emotions})
+        
+    except Exception as e:
+        logger.error(f"Error getting available emotions: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/api/journal/analyze', methods=['POST'])
+def analyze_journal_entry():
+    """Analyze a journal entry and record emotional state"""
+    try:
+        data = request.get_json()
+        user_email = data.get('user_email', '')
+        content = data.get('content', '')
+        
+        if not all([user_email, content]):
+            return jsonify({"error": "user_email and content are required"}), 400
+            
+        # Save journal entry
+        entry_id = memory_manager.save_memory(user_email, content)
+        
+        # Analyze emotion
+        emotion_result = emotion_analyzer.analyze_emotion(content)
+        
+        # Record emotion with entry link
+        emotion_id = emotional_graph.record_emotion(user_email, emotion_result, entry_id)
+        
+        return jsonify({
+            "entry_id": entry_id,
+            "emotion_id": emotion_id,
+            "emotion_analysis": emotion_result
+        })
+        
+    except Exception as e:
+        logger.error(f"Error analyzing journal entry: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+# Health check for AI services
+@app.route('/api/ai/status', methods=['GET'])
+def ai_status():
+    """Check status of AI components"""
+    try:
+        status = {
+            "emotional_graph": True,
+            "emotion_analyzer": True,
+            "search_algorithm": True,
+            "database_connection": True
+        }
+        
+        # Test database connection
+        try:
+            db.list_collection_names()
+        except:
+            status["database_connection"] = False
+            
+        return jsonify(status)
+        
+    except Exception as e:
+        logger.error(f"Error checking AI status: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5002, debug=True)
 ````
