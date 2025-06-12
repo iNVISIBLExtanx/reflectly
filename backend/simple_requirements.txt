@@ -1,3 +1,0 @@
-# Minimal requirements for algorithm development
-Flask==2.3.3
-Flask-CORS==4.0.0
