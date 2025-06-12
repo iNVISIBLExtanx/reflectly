@@ -31,17 +31,27 @@ const IntelligentAgentApp = () => {
 
   const checkBackendStatus = async () => {
     try {
-      // Try each possible port
-      const ports = [5000, 5001];
+      // Try to get the backend port from the window object
+      // This would be set by the backend as a global variable
+      const configuredPort = window.BACKEND_PORT || process.env.REACT_APP_BACKEND_PORT;
+      
+      // Default ports to try if not configured
+      const defaultPorts = [5000, 5001];
+      const portsToTry = configuredPort ? [configuredPort, ...defaultPorts] : defaultPorts;
+      
       let response;
       let apiBase;
       
-      for (const port of ports) {
+      // Try direct connections
+      for (const port of portsToTry) {
         try {
+          console.log(`Trying to connect to backend on port ${port}...`);
           response = await fetch(`http://localhost:${port}/api/health`);
           if (response.ok) {
             apiBase = `http://localhost:${port}/api`;
             console.log(`✅ Connected to backend on port ${port}`);
+            // Save the working port for future reference
+            window.BACKEND_PORT = port;
             break;
           }
         } catch (err) {
@@ -52,9 +62,11 @@ const IntelligentAgentApp = () => {
       // If direct connections fail, try proxy
       if (!response || !response.ok) {
         try {
+          console.log('Trying proxy connection...');
           response = await fetch('/api/health');
           if (response.ok) {
             apiBase = '/api';
+            console.log('✅ Connected to backend via proxy');
           }
         } catch (err) {
           console.log('Proxy connection failed');
@@ -79,15 +91,26 @@ const IntelligentAgentApp = () => {
   };
 
   const makeApiCall = async (endpoint, options = {}) => {
-    // Try direct connection first (on both ports), then proxy
-    const urls = [
-      `http://localhost:5000/api${endpoint}`,
-      `http://localhost:5001/api${endpoint}`,
-      `/api${endpoint}`
-    ];
+    // Use the discovered port from checkBackendStatus if available
+    const urls = [];
+    
+    // If we already found a working port, try it first
+    if (window.BACKEND_PORT) {
+      urls.push(`http://localhost:${window.BACKEND_PORT}/api${endpoint}`);
+    } else {
+      // Otherwise try common ports
+      urls.push(`http://localhost:5001/api${endpoint}`); // Try port 5001 first as it's our default
+      urls.push(`http://localhost:5000/api${endpoint}`);
+    }
+    
+    // Always try proxy as fallback
+    urls.push(`/api${endpoint}`);
+    
+    let lastError = null;
     
     for (const url of urls) {
       try {
+        console.log(`Trying API call to ${url}...`);
         const response = await fetch(url, {
           ...options,
           headers: {
@@ -97,14 +120,28 @@ const IntelligentAgentApp = () => {
         });
         
         if (response.ok) {
+          // If we successfully made a call, remember this port for future calls
+          const match = url.match(/http:\/\/localhost:(\d+)/);
+          if (match && match[1]) {
+            window.BACKEND_PORT = match[1];
+            console.log(`Successfully connected to backend on port ${match[1]}`);
+          }
           return response;
+        } else {
+          lastError = `Backend returned status ${response.status}`;
+          console.log(`Failed API call to ${url}: ${lastError}`);
         }
       } catch (error) {
+        lastError = error.message;
         console.log(`Failed to connect to ${url}:`, error.message);
       }
     }
     
-    throw new Error('Could not connect to backend');
+    const portMessage = window.BACKEND_PORT ? 
+      `port ${window.BACKEND_PORT}` : 
+      'ports 5001 or 5000';
+    
+    throw new Error(`Could not connect to backend. Make sure the backend is running on ${portMessage}.`);
   };
 
   const loadMemoryMap = async (apiBase = API_BASE) => {
@@ -144,42 +181,39 @@ const IntelligentAgentApp = () => {
         })
       });
 
-      if (response.ok) {
-        const agentResponse = await response.json();
-        
-        // Add user input and agent response to conversation
-        setConversation(prev => [
-          ...prev,
-          {
-            type: 'user',
-            text: inputText,
-            timestamp: new Date().toLocaleTimeString()
-          },
-          {
-            type: 'agent',
-            ...agentResponse,
-            timestamp: new Date().toLocaleTimeString()
-          }
-        ]);
-
-        // Clear input
-        setInputText('');
-
-        // If agent asks for steps, show steps form
-        if (agentResponse.type === 'ask_for_steps') {
-          setShowingStepsForm(true);
-          setCurrentExperienceId(agentResponse.experience_id);
-          setStepsInput(['']);
+      const agentResponse = await response.json();
+      
+      // Add user input and agent response to conversation
+      setConversation(prev => [
+        ...prev,
+        {
+          type: 'user',
+          text: inputText,
+          timestamp: new Date().toLocaleTimeString()
+        },
+        {
+          type: 'agent',
+          ...agentResponse,
+          timestamp: new Date().toLocaleTimeString()
         }
+      ]);
 
-        // Reload memory map and stats
-        await loadMemoryMap();
-        await loadMemoryStats();
-      } else {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      // Clear input
+      setInputText('');
+
+      // If agent asks for steps, show steps form
+      if (agentResponse.type === 'ask_for_steps') {
+        setShowingStepsForm(true);
+        setCurrentExperienceId(agentResponse.experience_id);
+        setStepsInput(['']);
       }
+      
+      // Reload memory map and stats after successful input processing
+      await loadMemoryMap();
+      await loadMemoryStats();
+      
     } catch (error) {
-      console.error('Error processing input:', error);
+      console.error('❌ Error processing input:', error);
       
       // Add error message to conversation
       setConversation(prev => [
@@ -190,13 +224,11 @@ const IntelligentAgentApp = () => {
           timestamp: new Date().toLocaleTimeString()
         },
         {
-          type: 'agent',
-          message: `❌ Sorry, I couldn't process your input. Error: ${error.message}. Make sure the backend is running on port 5000.`,
+          type: 'error',
+          text: `❌ Sorry, I couldn't process your input. Error: ${error.message}`,
           timestamp: new Date().toLocaleTimeString()
         }
       ]);
-      
-      setInputText('');
     } finally {
       setLoading(false);
     }
