@@ -510,6 +510,109 @@ if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5001, debug=True)
 </file>
 
+<file path="backend/start_backend.sh">
+#!/bin/bash
+
+# Activate virtual environment if it exists
+if [ -d "venv" ]; then
+    echo "Activating virtual environment..."
+    source venv/bin/activate
+fi
+
+# Install requirements if needed
+if [ -f "requirements.txt" ]; then
+    echo "Installing requirements..."
+    pip install -r requirements.txt
+fi
+
+# Start the Flask application
+echo "Starting Flask application..."
+export FLASK_APP=app.py
+export FLASK_ENV=development
+python -m flask run --host=0.0.0.0 --port=5002
+</file>
+
+<file path="frontend/public/manifest.json">
+{
+  "short_name": "Reflectly",
+  "name": "Reflectly - Personal Journaling",
+  "icons": [
+    {
+      "src": "favicon.ico",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/x-icon"
+    },
+    {
+      "src": "logo192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "logo512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#4dabf5",
+  "background_color": "#ffffff"
+}
+</file>
+
+<file path=".gitignore">
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+venv/
+.env
+
+# Node.js
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+.pnp/
+.pnp.js
+.npm
+.yarn-integrity
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# MongoDB
+data/db/
+
+# Redis
+dump.rdb
+
+# Logs
+logs/
+*.log
+</file>
+
 <file path="cleanup.sh">
 #!/bin/bash
 
@@ -796,6 +899,226 @@ echo ""
 wait $BACKEND_PID $FRONTEND_PID
 </file>
 
+<file path="start_reflectly.sh">
+#!/bin/bash
+
+# Script to start the entire Reflectly application with big data infrastructure
+
+# Function to display usage
+function display_usage {
+    echo "Usage: $0 [options]"
+    echo ""
+    echo "Options:"
+    echo "  --help                Display this help message"
+    echo "  --skip-docker         Skip starting Docker containers"
+    echo "  --skip-backend        Skip starting the backend"
+    echo "  --skip-frontend       Skip starting the frontend"
+    echo "  --skip-copy-jobs      Skip copying Spark jobs"
+    echo ""
+    echo "Example:"
+    echo "  $0                    Start everything"
+    echo "  $0 --skip-docker      Start everything except Docker containers"
+}
+
+# Parse command line arguments
+SKIP_DOCKER=false
+SKIP_BACKEND=false
+SKIP_FRONTEND=false
+SKIP_COPY_JOBS=false
+
+while [[ $# -gt 0 ]]; do
+    key="$1"
+    case $key in
+        --help)
+            display_usage
+            exit 0
+            ;;
+        --skip-docker)
+            SKIP_DOCKER=true
+            shift
+            ;;
+        --skip-backend)
+            SKIP_BACKEND=true
+            shift
+            ;;
+        --skip-frontend)
+            SKIP_FRONTEND=true
+            shift
+            ;;
+        --skip-copy-jobs)
+            SKIP_COPY_JOBS=true
+            shift
+            ;;
+        *)
+            echo "Error: Unknown option: $key"
+            display_usage
+            exit 1
+            ;;
+    esac
+done
+
+# Start Docker containers
+if [ "$SKIP_DOCKER" = false ]; then
+    echo "Starting Docker containers..."
+    docker-compose up -d
+    
+    # Wait for containers to start
+    echo "Waiting for containers to start..."
+    sleep 10
+else
+    echo "Skipping Docker containers startup..."
+fi
+
+# Copy Spark jobs
+if [ "$SKIP_COPY_JOBS" = false ]; then
+    echo "Copying Spark jobs..."
+    ./copy_spark_jobs.sh
+else
+    echo "Skipping copying Spark jobs..."
+fi
+
+# Start backend
+if [ "$SKIP_BACKEND" = false ]; then
+    echo "Starting backend..."
+    cd backend
+    ./start_backend.sh &
+    cd ..
+    
+    # Wait for backend to start
+    echo "Waiting for backend to start..."
+    sleep 5
+else
+    echo "Skipping backend startup..."
+fi
+
+# Start frontend
+if [ "$SKIP_FRONTEND" = false ]; then
+    echo "Starting frontend..."
+    cd frontend
+    npm start &
+    cd ..
+else
+    echo "Skipping frontend startup..."
+fi
+
+echo ""
+echo "Reflectly application started!"
+echo ""
+echo "Access the application at: http://localhost:3000"
+echo "Access Spark Master at: http://localhost:8080"
+echo "Access Hadoop NameNode at: http://localhost:9870"
+echo ""
+echo "To stop the application, press Ctrl+C and then run: docker-compose down"
+</file>
+
+<file path="start-ai-demo.sh">
+#!/bin/bash
+
+echo "🚀 Starting Reflectly AI - Emotional Pathfinding Demo"
+echo "================================================="
+
+# Check if Docker is installed
+if ! command -v docker &> /dev/null; then
+    echo "❌ Docker is not installed. Please install Docker first."
+    exit 1
+fi
+
+if ! command -v docker-compose &> /dev/null; then
+    echo "❌ Docker Compose is not installed. Please install Docker Compose first."
+    exit 1
+fi
+
+echo "✅ Docker and Docker Compose are available"
+
+# Make cleanup script executable
+chmod +x cleanup-for-ai.sh
+
+echo ""
+echo "🧹 Running cleanup to remove big data components..."
+./cleanup-for-ai.sh
+
+echo ""
+echo "🔧 Starting core AI services..."
+
+# Stop any existing containers
+docker-compose down
+
+# Build and start services
+docker-compose up -d --build
+
+echo ""
+echo "⏳ Waiting for services to be ready..."
+
+# Wait for backend to be ready
+echo "Checking backend health..."
+for i in {1..30}; do
+    if curl -s http://localhost:5002/health >/dev/null 2>&1; then
+        echo "✅ Backend is ready!"
+        break
+    fi
+    if [ $i -eq 30 ]; then
+        echo "❌ Backend failed to start. Check logs with: docker-compose logs backend"
+        exit 1
+    fi
+    sleep 2
+done
+
+# Wait for frontend to be ready
+echo "Checking frontend..."
+for i in {1..20}; do
+    if curl -s http://localhost:3000 >/dev/null 2>&1; then
+        echo "✅ Frontend is ready!"
+        break
+    fi
+    if [ $i -eq 20 ]; then
+        echo "⚠️  Frontend might still be starting. Check logs with: docker-compose logs frontend"
+    fi
+    sleep 3
+done
+
+echo ""
+echo "🎉 Reflectly AI is now running!"
+echo ""
+echo "🌐 Access Points:"
+echo "   Frontend (AI Demo): http://localhost:3000"
+echo "   Backend API:        http://localhost:5002"
+echo "   Health Check:       http://localhost:5002/health"
+echo ""
+echo "🧠 Core AI Features Available:"
+echo "   ✅ A* Emotional Pathfinding"
+echo "   ✅ Emotion Analysis from Text"
+echo "   ✅ Interactive Graph Visualization"
+echo "   ✅ Personalized Action Suggestions"
+echo ""
+echo "🔬 Test the AI API:"
+echo ""
+echo "1. Analyze emotion from text:"
+echo "   curl -X POST http://localhost:5002/api/emotions/analyze \\"
+echo "        -H 'Content-Type: application/json' \\"
+echo "        -d '{\"text\": \"I feel excited about this new project!\", \"user_email\": \"demo@example.com\"}'"
+echo ""
+echo "2. Find optimal emotional path:"
+echo "   curl -X POST http://localhost:5002/api/emotions/path \\"
+echo "        -H 'Content-Type: application/json' \\"
+echo "        -d '{\"user_email\": \"demo@example.com\", \"current_emotion\": \"sadness\", \"target_emotion\": \"joy\"}'"
+echo ""
+echo "3. Get graph visualization data:"
+echo "   curl http://localhost:5002/api/emotions/graph-data/demo@example.com"
+echo ""
+echo "📊 To view logs:"
+echo "   docker-compose logs -f"
+echo ""
+echo "🛑 To stop services:"
+echo "   docker-compose down"
+echo ""
+echo "🎯 Focus Areas:"
+echo "   - A* search algorithm in backend/models/search_algorithm.py"
+echo "   - Emotional graph theory in backend/models/emotional_graph.py"
+echo "   - AI visualization in frontend/src/pages/EmotionalJourneyGraph.js"
+echo ""
+echo "Happy pathfinding! 🎯✨"
+</file>
+
 <file path="start-debug.sh">
 #!/bin/bash
 
@@ -1074,6 +1397,28 @@ echo ""
 
 # Keep running
 wait $BACKEND_PID $FRONTEND_PID
+</file>
+
+<file path="stop_reflectly.sh">
+#!/bin/bash
+
+# Script to stop the entire Reflectly application with big data infrastructure
+
+echo "Stopping Reflectly application..."
+
+# Find and kill frontend process (npm)
+echo "Stopping frontend..."
+pkill -f "node.*start"
+
+# Find and kill backend process (Flask)
+echo "Stopping backend..."
+pkill -f "python.*app.py"
+
+# Stop Docker containers
+echo "Stopping Docker containers..."
+docker-compose down
+
+echo "All Reflectly components have been stopped."
 </file>
 
 <file path="backend/intelligent_agent.py">
@@ -1514,351 +1859,6 @@ if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
 </file>
 
-<file path="backend/start_backend.sh">
-#!/bin/bash
-
-# Activate virtual environment if it exists
-if [ -d "venv" ]; then
-    echo "Activating virtual environment..."
-    source venv/bin/activate
-fi
-
-# Install requirements if needed
-if [ -f "requirements.txt" ]; then
-    echo "Installing requirements..."
-    pip install -r requirements.txt
-fi
-
-# Start the Flask application
-echo "Starting Flask application..."
-export FLASK_APP=app.py
-export FLASK_ENV=development
-python -m flask run --host=0.0.0.0 --port=5002
-</file>
-
-<file path="frontend/public/manifest.json">
-{
-  "short_name": "Reflectly",
-  "name": "Reflectly - Personal Journaling",
-  "icons": [
-    {
-      "src": "favicon.ico",
-      "sizes": "64x64 32x32 24x24 16x16",
-      "type": "image/x-icon"
-    },
-    {
-      "src": "logo192.png",
-      "type": "image/png",
-      "sizes": "192x192"
-    },
-    {
-      "src": "logo512.png",
-      "type": "image/png",
-      "sizes": "512x512"
-    }
-  ],
-  "start_url": ".",
-  "display": "standalone",
-  "theme_color": "#4dabf5",
-  "background_color": "#ffffff"
-}
-</file>
-
-<file path=".gitignore">
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-*.egg-info/
-.installed.cfg
-*.egg
-venv/
-.env
-
-# Node.js
-node_modules/
-npm-debug.log
-yarn-debug.log
-yarn-error.log
-.pnp/
-.pnp.js
-.npm
-.yarn-integrity
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-.DS_Store
-
-# MongoDB
-data/db/
-
-# Redis
-dump.rdb
-
-# Logs
-logs/
-*.log
-</file>
-
-<file path="start_reflectly.sh">
-#!/bin/bash
-
-# Script to start the entire Reflectly application with big data infrastructure
-
-# Function to display usage
-function display_usage {
-    echo "Usage: $0 [options]"
-    echo ""
-    echo "Options:"
-    echo "  --help                Display this help message"
-    echo "  --skip-docker         Skip starting Docker containers"
-    echo "  --skip-backend        Skip starting the backend"
-    echo "  --skip-frontend       Skip starting the frontend"
-    echo "  --skip-copy-jobs      Skip copying Spark jobs"
-    echo ""
-    echo "Example:"
-    echo "  $0                    Start everything"
-    echo "  $0 --skip-docker      Start everything except Docker containers"
-}
-
-# Parse command line arguments
-SKIP_DOCKER=false
-SKIP_BACKEND=false
-SKIP_FRONTEND=false
-SKIP_COPY_JOBS=false
-
-while [[ $# -gt 0 ]]; do
-    key="$1"
-    case $key in
-        --help)
-            display_usage
-            exit 0
-            ;;
-        --skip-docker)
-            SKIP_DOCKER=true
-            shift
-            ;;
-        --skip-backend)
-            SKIP_BACKEND=true
-            shift
-            ;;
-        --skip-frontend)
-            SKIP_FRONTEND=true
-            shift
-            ;;
-        --skip-copy-jobs)
-            SKIP_COPY_JOBS=true
-            shift
-            ;;
-        *)
-            echo "Error: Unknown option: $key"
-            display_usage
-            exit 1
-            ;;
-    esac
-done
-
-# Start Docker containers
-if [ "$SKIP_DOCKER" = false ]; then
-    echo "Starting Docker containers..."
-    docker-compose up -d
-    
-    # Wait for containers to start
-    echo "Waiting for containers to start..."
-    sleep 10
-else
-    echo "Skipping Docker containers startup..."
-fi
-
-# Copy Spark jobs
-if [ "$SKIP_COPY_JOBS" = false ]; then
-    echo "Copying Spark jobs..."
-    ./copy_spark_jobs.sh
-else
-    echo "Skipping copying Spark jobs..."
-fi
-
-# Start backend
-if [ "$SKIP_BACKEND" = false ]; then
-    echo "Starting backend..."
-    cd backend
-    ./start_backend.sh &
-    cd ..
-    
-    # Wait for backend to start
-    echo "Waiting for backend to start..."
-    sleep 5
-else
-    echo "Skipping backend startup..."
-fi
-
-# Start frontend
-if [ "$SKIP_FRONTEND" = false ]; then
-    echo "Starting frontend..."
-    cd frontend
-    npm start &
-    cd ..
-else
-    echo "Skipping frontend startup..."
-fi
-
-echo ""
-echo "Reflectly application started!"
-echo ""
-echo "Access the application at: http://localhost:3000"
-echo "Access Spark Master at: http://localhost:8080"
-echo "Access Hadoop NameNode at: http://localhost:9870"
-echo ""
-echo "To stop the application, press Ctrl+C and then run: docker-compose down"
-</file>
-
-<file path="start-ai-demo.sh">
-#!/bin/bash
-
-echo "🚀 Starting Reflectly AI - Emotional Pathfinding Demo"
-echo "================================================="
-
-# Check if Docker is installed
-if ! command -v docker &> /dev/null; then
-    echo "❌ Docker is not installed. Please install Docker first."
-    exit 1
-fi
-
-if ! command -v docker-compose &> /dev/null; then
-    echo "❌ Docker Compose is not installed. Please install Docker Compose first."
-    exit 1
-fi
-
-echo "✅ Docker and Docker Compose are available"
-
-# Make cleanup script executable
-chmod +x cleanup-for-ai.sh
-
-echo ""
-echo "🧹 Running cleanup to remove big data components..."
-./cleanup-for-ai.sh
-
-echo ""
-echo "🔧 Starting core AI services..."
-
-# Stop any existing containers
-docker-compose down
-
-# Build and start services
-docker-compose up -d --build
-
-echo ""
-echo "⏳ Waiting for services to be ready..."
-
-# Wait for backend to be ready
-echo "Checking backend health..."
-for i in {1..30}; do
-    if curl -s http://localhost:5002/health >/dev/null 2>&1; then
-        echo "✅ Backend is ready!"
-        break
-    fi
-    if [ $i -eq 30 ]; then
-        echo "❌ Backend failed to start. Check logs with: docker-compose logs backend"
-        exit 1
-    fi
-    sleep 2
-done
-
-# Wait for frontend to be ready
-echo "Checking frontend..."
-for i in {1..20}; do
-    if curl -s http://localhost:3000 >/dev/null 2>&1; then
-        echo "✅ Frontend is ready!"
-        break
-    fi
-    if [ $i -eq 20 ]; then
-        echo "⚠️  Frontend might still be starting. Check logs with: docker-compose logs frontend"
-    fi
-    sleep 3
-done
-
-echo ""
-echo "🎉 Reflectly AI is now running!"
-echo ""
-echo "🌐 Access Points:"
-echo "   Frontend (AI Demo): http://localhost:3000"
-echo "   Backend API:        http://localhost:5002"
-echo "   Health Check:       http://localhost:5002/health"
-echo ""
-echo "🧠 Core AI Features Available:"
-echo "   ✅ A* Emotional Pathfinding"
-echo "   ✅ Emotion Analysis from Text"
-echo "   ✅ Interactive Graph Visualization"
-echo "   ✅ Personalized Action Suggestions"
-echo ""
-echo "🔬 Test the AI API:"
-echo ""
-echo "1. Analyze emotion from text:"
-echo "   curl -X POST http://localhost:5002/api/emotions/analyze \\"
-echo "        -H 'Content-Type: application/json' \\"
-echo "        -d '{\"text\": \"I feel excited about this new project!\", \"user_email\": \"demo@example.com\"}'"
-echo ""
-echo "2. Find optimal emotional path:"
-echo "   curl -X POST http://localhost:5002/api/emotions/path \\"
-echo "        -H 'Content-Type: application/json' \\"
-echo "        -d '{\"user_email\": \"demo@example.com\", \"current_emotion\": \"sadness\", \"target_emotion\": \"joy\"}'"
-echo ""
-echo "3. Get graph visualization data:"
-echo "   curl http://localhost:5002/api/emotions/graph-data/demo@example.com"
-echo ""
-echo "📊 To view logs:"
-echo "   docker-compose logs -f"
-echo ""
-echo "🛑 To stop services:"
-echo "   docker-compose down"
-echo ""
-echo "🎯 Focus Areas:"
-echo "   - A* search algorithm in backend/models/search_algorithm.py"
-echo "   - Emotional graph theory in backend/models/emotional_graph.py"
-echo "   - AI visualization in frontend/src/pages/EmotionalJourneyGraph.js"
-echo ""
-echo "Happy pathfinding! 🎯✨"
-</file>
-
-<file path="stop_reflectly.sh">
-#!/bin/bash
-
-# Script to stop the entire Reflectly application with big data infrastructure
-
-echo "Stopping Reflectly application..."
-
-# Find and kill frontend process (npm)
-echo "Stopping frontend..."
-pkill -f "node.*start"
-
-# Find and kill backend process (Flask)
-echo "Stopping backend..."
-pkill -f "python.*app.py"
-
-# Stop Docker containers
-echo "Stopping Docker containers..."
-docker-compose down
-
-echo "All Reflectly components have been stopped."
-</file>
-
 <file path="frontend/public/index.html">
 <!DOCTYPE html>
 <html lang="en">
@@ -1883,6 +1883,71 @@ import App from './App';
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(<App />);
+</file>
+
+<file path="frontend/src/index.css">
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #f5f5f5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.App {
+  min-height: 100vh;
+}
+
+/* Simple button styles */
+button {
+  cursor: pointer;
+  border: none;
+  border-radius: 5px;
+  font-family: inherit;
+  transition: all 0.2s ease;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+/* Simple input styles */
+input, textarea, select {
+  font-family: inherit;
+  border-radius: 5px;
+  border: 1px solid #ddd;
+  padding: 8px;
+}
+
+input:focus, textarea:focus, select:focus {
+  outline: none;
+  border-color: #007bff;
+  box-shadow: 0 0 0 2px rgba(0,123,255,0.25);
+}
+
+/* Utility classes */
+.text-center {
+  text-align: center;
+}
+
+.mb-1 { margin-bottom: 8px; }
+.mb-2 { margin-bottom: 16px; }
+.mb-3 { margin-bottom: 24px; }
+.mt-1 { margin-top: 8px; }
+.mt-2 { margin-top: 16px; }
+.mt-3 { margin-top: 24px; }
 </file>
 
 <file path="frontend/src/IntelligentAgentApp.js">
@@ -2665,71 +2730,6 @@ export default IntelligentAgentApp;
   },
   "proxy": "http://localhost:5001"
 }
-</file>
-
-<file path="frontend/src/index.css">
-body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  background-color: #f5f5f5;
-}
-
-* {
-  box-sizing: border-box;
-}
-
-.App {
-  min-height: 100vh;
-}
-
-/* Simple button styles */
-button {
-  cursor: pointer;
-  border: none;
-  border-radius: 5px;
-  font-family: inherit;
-  transition: all 0.2s ease;
-}
-
-button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-button:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-}
-
-/* Simple input styles */
-input, textarea, select {
-  font-family: inherit;
-  border-radius: 5px;
-  border: 1px solid #ddd;
-  padding: 8px;
-}
-
-input:focus, textarea:focus, select:focus {
-  outline: none;
-  border-color: #007bff;
-  box-shadow: 0 0 0 2px rgba(0,123,255,0.25);
-}
-
-/* Utility classes */
-.text-center {
-  text-align: center;
-}
-
-.mb-1 { margin-bottom: 8px; }
-.mb-2 { margin-bottom: 16px; }
-.mb-3 { margin-bottom: 24px; }
-.mt-1 { margin-top: 8px; }
-.mt-2 { margin-top: 16px; }
-.mt-3 { margin-top: 24px; }
 </file>
 
 <file path="frontend/src/App.js">
