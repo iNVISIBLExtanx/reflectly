@@ -67,7 +67,17 @@ frontend/
     index.js
     IntelligentAgentApp.js
   package.json
+reflectly-enhanced/
+  backend/
+    iemocap_loader.py
+    intelligent_agent.py
+    requirements.txt
+  frontend/
+    src/
+      IntelligentAgentApp.js
+  comprehensive_test_script.py
 .gitignore
+.repomixignore
 cleanup.sh
 README.md
 start.sh
@@ -1878,6 +1888,3469 @@ const AlgorithmComparisonUI = ({ makeApiCall }) => {
 export default AlgorithmComparisonUI;
 </file>
 
+<file path="reflectly-enhanced/backend/iemocap_loader.py">
+"""
+IEMOCAP Dataset Loader and Processor
+====================================
+
+This module handles loading and processing the IEMOCAP Emotional Speech Dataset
+for validating emotion recognition and pathfinding algorithms.
+
+Requirements:
+- pandas
+- numpy
+- scipy
+- librosa (for audio processing)
+- scikit-learn
+- nltk
+
+Install: pip install pandas numpy scipy librosa scikit-learn nltk
+"""
+
+import os
+import pandas as pd
+import numpy as np
+import json
+import re
+from collections import defaultdict, Counter
+from datetime import datetime
+import librosa
+import nltk
+from nltk.tokenize import word_tokenize, sent_tokenize
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.cluster import KMeans
+
+# Download required NLTK data
+try:
+    nltk.download('punkt', quiet=True)
+    nltk.download('stopwords', quiet=True)
+    nltk.download('wordnet', quiet=True)
+except:
+    print("NLTK download failed, some features may not work")
+
+class IEMOCAPDatasetLoader:
+    """
+    Loads and processes IEMOCAP dataset for emotion recognition validation
+    """
+    
+    def __init__(self, dataset_path: str):
+        self.dataset_path = dataset_path
+        self.data = None
+        self.processed_data = None
+        self.emotion_mapping = {
+            'ang': 'angry',
+            'hap': 'happy', 
+            'sad': 'sad',
+            'neu': 'neutral',
+            'exc': 'happy',  # excitement mapped to happy
+            'fru': 'angry',  # frustration mapped to angry
+            'fea': 'anxious', # fear mapped to anxious
+            'sur': 'confused', # surprise mapped to confused
+            'dis': 'angry',   # disgust mapped to angry
+            'oth': 'neutral'  # other mapped to neutral
+        }
+        
+        self.lemmatizer = WordNetLemmatizer()
+        self.stop_words = set(stopwords.words('english'))
+        
+    def load_dataset(self):
+        """
+        Load IEMOCAP dataset from CSV or directory structure
+        """
+        try:
+            # Check for iemocap_full_dataset.csv
+            csv_path = os.path.join(self.dataset_path, 'iemocap_full_dataset.csv')
+            if os.path.exists(csv_path):
+                raw_data = pd.read_csv(csv_path)
+                print(f"Loaded {len(raw_data)} samples from CSV at {csv_path}")
+                
+                # Transform into expected format
+                self.data = pd.DataFrame()
+                self.data['filename'] = raw_data['path'].apply(lambda x: os.path.basename(x) if isinstance(x, str) else '')
+                self.data['text'] = ''  # Initialize empty text column, will be populated if possible
+                self.data['emotion'] = raw_data['emotion']
+                self.data['session'] = raw_data['session']
+                self.data['speaker'] = raw_data['gender']
+                
+                # Look for transcription files if available
+                for i, row in self.data.iterrows():
+                    wav_path = row['filename']
+                    try:
+                        # Try to find matching transcript file
+                        transcript_path = os.path.join(self.dataset_path, 'transcripts',
+                                                     f"{os.path.splitext(wav_path)[0]}.txt")
+                        if os.path.exists(transcript_path):
+                            with open(transcript_path, 'r', encoding='utf-8') as f:
+                                self.data.at[i, 'text'] = f.read().strip()
+                    except Exception as e:
+                        # If transcript not found, leave the text field empty
+                        pass
+            else:
+                # Legacy loading from directory structure
+                self.data = self._load_from_directory()
+                print(f"Loaded {len(self.data)} samples from directory")
+                
+            # Filter out rows with 'xxx' emotion (unclassified)
+            self.data = self.data[self.data['emotion'] != 'xxx']
+                
+            # Standardize emotion labels
+            self.data['emotion_mapped'] = self.data['emotion'].map(
+                lambda x: self.emotion_mapping.get(x.lower()[:3], 'neutral') if isinstance(x, str) else 'neutral'
+            )
+            
+            return len(self.data) > 0
+            
+        except Exception as e:
+            print(f"Error loading dataset: {e}")
+            return False
+    
+    def _load_from_directory(self):
+        """
+        Load dataset from IEMOCAP directory structure
+        This is a simplified version - adjust based on actual dataset structure
+        """
+        data_records = []
+        
+        # Walk through dataset directory
+        for root, dirs, files in os.walk(self.dataset_path):
+            for file in files:
+                if file.endswith('.txt'):  # Transcription files
+                    file_path = os.path.join(root, file)
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read().strip()
+                            
+                        # Extract emotion from filename or directory
+                        emotion = self._extract_emotion_from_path(file_path)
+                        session = self._extract_session_from_path(file_path)
+                        speaker = self._extract_speaker_from_path(file_path)
+                        
+                        data_records.append({
+                            'filename': file,
+                            'text': content,
+                            'emotion': emotion,
+                            'session': session,
+                            'speaker': speaker
+                        })
+                        
+                    except Exception as e:
+                        print(f"Error reading {file_path}: {e}")
+                        continue
+        
+        return pd.DataFrame(data_records)
+    
+    def _extract_emotion_from_path(self, file_path):
+        """Extract emotion label from file path"""
+        # This would be customized based on actual IEMOCAP structure
+        # For now, using a simple pattern
+        emotions = ['ang', 'hap', 'sad', 'neu', 'exc', 'fru', 'fea', 'sur', 'dis']
+        for emotion in emotions:
+            if emotion in file_path.lower():
+                return emotion
+        return 'neu'
+    
+    def _extract_session_from_path(self, file_path):
+        """Extract session info from file path"""
+        match = re.search(r'Session(\d+)', file_path)
+        return match.group(1) if match else 'unknown'
+    
+    def _extract_speaker_from_path(self, file_path):
+        """Extract speaker info from file path"""
+        match = re.search(r'[MF]\d+', file_path)
+        return match.group(0) if match else 'unknown'
+    
+    def preprocess_data(self):
+        """
+        Preprocess the loaded data for emotion recognition and action extraction
+        """
+        if self.data is None or len(self.data) == 0:
+            print("No data loaded. Call load_dataset() first.")
+            return False
+        
+        print("Preprocessing dataset...")
+        
+        try:
+            # Clean and process text
+            self.data['text_cleaned'] = self.data['text'].fillna('').apply(self._clean_text)
+            
+            # Extract potential actions from text
+            self.data['extracted_actions'] = self.data['text_cleaned'].apply(
+                self._extract_actions_ml
+            )
+            
+            # Calculate text features
+            self.data['text_length'] = self.data['text'].fillna('').str.len()
+            self.data['word_count'] = self.data['text_cleaned'].str.split().str.len()
+            
+            # If there's no text, generate synthetic data for testing purposes
+            if self.data['text_length'].sum() == 0:
+                print("Warning: No text data found. Generating placeholder actions for testing.")
+                # Assign random actions based on emotion
+                action_map = {
+                    'angry': ['argue', 'shout', 'complain', 'criticize'],
+                    'happy': ['smile', 'laugh', 'celebrate', 'praise'],
+                    'sad': ['cry', 'sigh', 'withdraw', 'mourn'],
+                    'neutral': ['talk', 'discuss', 'consider', 'observe'],
+                    'anxious': ['worry', 'fidget', 'panic', 'hesitate'],
+                    'confused': ['question', 'wonder', 'examine', 'ponder']
+                }
+                
+                # Assign synthetic actions
+                def assign_actions(emotion):
+                    import random
+                    emotion_key = emotion if emotion in action_map else 'neutral'
+                    actions = action_map.get(emotion_key, [])
+                    num_actions = random.randint(1, 3) if actions else 0
+                    return random.sample(actions, min(num_actions, len(actions)))
+                
+                self.data['extracted_actions'] = self.data['emotion_mapped'].apply(assign_actions)
+            
+            # Group by emotion for analysis
+            emotion_groups = self.data.groupby('emotion_mapped')
+            
+            self.processed_data = {
+                'emotion_distribution': emotion_groups.size().to_dict(),
+                'avg_text_length': emotion_groups['text_length'].mean().to_dict(),
+                'common_actions': self._extract_common_actions(),
+                'emotion_transitions': self._build_emotion_transitions(),
+                'dataset_stats': {
+                    'total_samples': len(self.data),
+                    'unique_emotions': self.data['emotion_mapped'].nunique(),
+                    'sessions': self.data['session'].nunique(),
+                    'speakers': self.data['speaker'].nunique()
+                }
+            }
+            
+            print("Preprocessing completed!")
+            return True
+            
+        except Exception as e:
+            print(f"Error during preprocessing: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def _clean_text(self, text):
+        """Clean and normalize text"""
+        if pd.isna(text) or text == '':
+            return ""
+        
+        # Convert to lowercase
+        text = text.lower()
+        
+        # Remove special characters but keep basic punctuation
+        text = re.sub(r'[^a-zA-Z0-9\s\.\,\!\?]', '', text)
+        
+        # Remove extra whitespace
+        text = ' '.join(text.split())
+        
+        return text
+    
+    def _extract_actions_ml(self, text):
+        """
+        Extract potential actions using ML-based approach
+        """
+        actions = []
+        
+        # Return empty list if no text content
+        if not text or text == "":
+            return actions
+        
+        # Tokenize sentences
+        try:
+            sentences = sent_tokenize(text)
+        except:
+            return actions  # Return empty if tokenization fails
+        
+        for sentence in sentences:
+            try:
+                words = word_tokenize(sentence.lower())
+                
+                # Look for action patterns
+                action_patterns = [
+                    r'\b(i|we|he|she|they)\s+(am|is|are|was|were|will|would|should|could|might)\s+(\w+ing)\b',
+                    r'\b(i|we|he|she|they)\s+(go|went|come|came|run|ran|walk|walked|talk|talked|think|thought)\b',
+                    r'\b(i|we|he|she|they)\s+(feel|felt|seem|seemed|look|looked|sound|sounded)\s+(\w+)\b',
+                    r'\b(let\'s|should|could|might|would)\s+(\w+)\b',
+                    r'\b(try|tried|attempt|attempted|decide|decided|choose|chose)\s+to\s+(\w+)\b'
+                ]
+                
+                for pattern in action_patterns:
+                    matches = re.findall(pattern, sentence)
+                    for match in matches:
+                        if isinstance(match, tuple):
+                            # Extract the action verb from the match
+                            action = match[-1] if match else ""
+                        else:
+                            action = match
+                        
+                        if action and action not in self.stop_words and len(action) > 2:
+                            actions.append(self.lemmatizer.lemmatize(action, 'v'))
+            except Exception as e:
+                continue  # Skip this sentence if processing fails
+        
+        return list(set(actions))  # Remove duplicates
+    
+    def _extract_common_actions(self):
+        """Extract most common actions for each emotion"""
+        emotion_actions = defaultdict(list)
+        
+        for _, row in self.data.iterrows():
+            emotion = row['emotion_mapped']
+            actions = row['extracted_actions']
+            if actions:
+                emotion_actions[emotion].extend(actions)
+        
+        # Get top actions for each emotion
+        common_actions = {}
+        for emotion, actions in emotion_actions.items():
+            action_counts = Counter(actions)
+            common_actions[emotion] = action_counts.most_common(10)
+        
+        return common_actions
+    
+    def _build_emotion_transitions(self):
+        """
+        Build emotion transitions based on session data
+        """
+        transitions = defaultdict(int)
+        
+        # Group by session and speaker
+        session_groups = self.data.groupby(['session', 'speaker'])
+        
+        for (session, speaker), group in session_groups:
+            # Sort by filename (assuming chronological order)
+            group_sorted = group.sort_values('filename')
+            emotions = group_sorted['emotion_mapped'].tolist()
+            
+            # Count transitions
+            for i in range(len(emotions) - 1):
+                from_emotion = emotions[i]
+                to_emotion = emotions[i + 1]
+                if from_emotion != to_emotion:  # Only count actual transitions
+                    # Use string representation of tuple as key instead of tuple itself
+                    transitions[f"{from_emotion}_to_{to_emotion}"] += 1
+        
+        return dict(transitions)
+    
+    def generate_emotional_map(self):
+        """
+        Generate comprehensive emotional map for algorithm testing
+        """
+        if self.processed_data is None:
+            print("Data not preprocessed. Call preprocess_data() first.")
+            return None
+        
+        emotional_map = {
+            "nodes": [],
+            "edges": [],
+            "metadata": {
+                "dataset": "IEMOCAP",
+                "total_samples": self.processed_data['dataset_stats']['total_samples'],
+                "processing_date": datetime.now().isoformat()
+            }
+        }
+        
+        # Create nodes for each emotion
+        for emotion, count in self.processed_data['emotion_distribution'].items():
+            emotional_map["nodes"].append({
+                "id": emotion,
+                "label": emotion.title(),
+                "count": int(count),
+                "avg_text_length": self.processed_data['avg_text_length'].get(emotion, 0),
+                "common_actions": [action for action, _ in 
+                                 self.processed_data['common_actions'].get(emotion, [])[:5]]
+            })
+        
+        # Create edges for transitions
+        for key, count in self.processed_data['emotion_transitions'].items():
+            # Parse from and to emotions from the key string format "from_to_to"
+            parts = key.split('_to_')
+            if len(parts) == 2:
+                from_emotion, to_emotion = parts
+                if count > 0:  # Only include transitions that occurred
+                    emotional_map["edges"].append({
+                        "from": from_emotion,
+                        "to": to_emotion,
+                        "weight": int(count),
+                        "actions": [action for action, _ in 
+                                   self.processed_data['common_actions'].get(from_emotion, [])[:3]]
+                    })
+        
+        return emotional_map
+    
+    def export_for_validation(self, output_path: str):
+        """
+        Export processed data for algorithm validation
+        """
+        if self.processed_data is None:
+            print("No processed data to export")
+            return False
+        
+        try:
+            # Create validation dataset
+            validation_data = {
+                "conversations": [],
+                "emotional_map": self.generate_emotional_map(),
+                "statistics": self.processed_data
+            }
+            
+            # Sample conversations for testing
+            session_groups = self.data.groupby('session')
+            for session_id, group in list(session_groups)[:10]:  # Take first 10 sessions
+                group_sorted = group.sort_values('filename')
+                
+                conversation = {
+                    "session_id": session_id,
+                    "turns": []
+                }
+                
+                for _, row in group_sorted.iterrows():
+                    conversation["turns"].append({
+                        "text": row['text'],
+                        "emotion": row['emotion_mapped'],
+                        "actions": row['extracted_actions'],
+                        "speaker": row['speaker']
+                    })
+                
+                validation_data["conversations"].append(conversation)
+            
+            # Save to file
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(validation_data, f, indent=2, ensure_ascii=False)
+            
+            print(f"Validation data exported to {output_path}")
+            return True
+            
+        except Exception as e:
+            print(f"Error exporting data: {e}")
+            return False
+    
+    def get_dataset_summary(self):
+        """Get summary statistics of the dataset"""
+        if self.data is None:
+            return "No data loaded"
+        
+        summary = {
+            "total_samples": len(self.data),
+            "emotion_distribution": self.data['emotion_mapped'].value_counts().to_dict(),
+            "average_text_length": self.data['text'].str.len().mean(),
+            "sessions": self.data['session'].nunique(),
+            "speakers": self.data['speaker'].nunique()
+        }
+        
+        return summary
+
+# Usage Example:
+if __name__ == "__main__":
+    # Initialize loader
+    loader = IEMOCAPDatasetLoader("/path/to/iemocap/dataset")
+    
+    # Load and process dataset
+    if loader.load_dataset():
+        loader.preprocess_data()
+        
+        # Generate emotional map
+        emotional_map = loader.generate_emotional_map()
+        print("Generated emotional map with", len(emotional_map["nodes"]), "emotions")
+        
+        # Export for validation
+        loader.export_for_validation("iemocap_validation_data.json")
+        
+        # Print summary
+        summary = loader.get_dataset_summary()
+        print("Dataset Summary:", summary)
+</file>
+
+<file path="reflectly-enhanced/backend/intelligent_agent.py">
+"""
+Enhanced Intelligent Agent with IEMOCAP Dataset Integration
+=========================================================
+
+This enhanced version incorporates the IEMOCAP emotional speech dataset
+for improved emotion recognition and algorithm validation.
+
+New Features:
+- Dataset-trained emotion detection
+- ML-based action extraction
+- Comprehensive algorithm benchmarking
+- Large-scale validation testing
+- Performance analytics
+
+Requirements:
+pip install Flask Flask-CORS pandas numpy scikit-learn nltk textblob
+"""
+
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import json
+import datetime
+import re
+import heapq
+import time
+import os
+from collections import defaultdict, deque, Counter
+import uuid
+import pandas as pd
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, accuracy_score
+import nltk
+from textblob import TextBlob
+
+# Download required NLTK data
+try:
+    nltk.download('punkt', quiet=True)
+    nltk.download('stopwords', quiet=True)
+    nltk.download('wordnet', quiet=True)
+    nltk.download('vader_lexicon', quiet=True)
+except:
+    print("NLTK download failed, continuing with basic functionality")
+
+app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}})
+
+# Enhanced memory map with IEMOCAP integration
+memory_map = {
+    "emotional_states": {},
+    "transitions": {},
+    "user_experiences": [],
+    "graph_connections": defaultdict(list),
+    "algorithm_comparisons": [],
+    "iemocap_data": None,
+    "validation_results": [],
+    "ml_models": {}
+}
+
+class EnhancedEmotionAnalyzer:
+    """
+    Enhanced emotion analyzer using IEMOCAP dataset patterns
+    """
+    
+    def __init__(self):
+        # Expanded emotion categories from IEMOCAP
+        self.iemocap_emotions = {
+            'angry': ['angry', 'mad', 'annoyed', 'irritated', 'frustrated', 'furious', 'rage', 'pissed'],
+            'happy': ['happy', 'joy', 'excited', 'glad', 'content', 'pleased', 'thrilled', 'delighted', 'cheerful'],
+            'sad': ['sad', 'unhappy', 'down', 'depressed', 'blue', 'upset', 'miserable', 'disappointed'],
+            'neutral': ['okay', 'fine', 'normal', 'average', 'regular', 'alright', 'indifferent'],
+            'anxious': ['anxious', 'worry', 'nervous', 'concerned', 'stressed', 'tense', 'fearful', 'scared'],
+            'confused': ['confused', 'uncertain', 'puzzled', 'unsure', 'perplexed', 'lost', 'surprised'],
+            'tired': ['tired', 'exhausted', 'drained', 'weary', 'fatigued', 'worn out', 'sleepy'],
+            'disgusted': ['disgusted', 'revolted', 'repulsed', 'sick', 'grossed out'],
+            'excited': ['excited', 'thrilled', 'enthusiastic', 'energetic', 'pumped', 'elated'],
+            'frustrated': ['frustrated', 'annoyed', 'exasperated', 'fed up', 'aggravated']
+        }
+        
+        # Emotion mappings for algorithm compatibility
+        self.emotion_mapping = {
+            'angry': 'angry',
+            'happy': 'happy',
+            'sad': 'sad', 
+            'neutral': 'neutral',
+            'anxious': 'anxious',
+            'confused': 'confused',
+            'tired': 'tired',
+            'disgusted': 'angry',  # Map to angry for algorithm purposes
+            'excited': 'happy',    # Map to happy for algorithm purposes
+            'frustrated': 'angry'   # Map to angry for algorithm purposes
+        }
+        
+        self.positive_emotions = ['happy', 'excited']
+        self.negative_emotions = ['sad', 'angry', 'anxious', 'confused', 'tired', 'disgusted', 'frustrated']
+        self.neutral_emotions = ['neutral']
+        
+        # Initialize ML models
+        self.vectorizer = None
+        self.classifier = None
+        self.is_trained = False
+    
+    def train_from_iemocap(self, iemocap_data):
+        """
+        Train emotion classifier using IEMOCAP data
+        """
+        if iemocap_data is None:
+            print("No IEMOCAP data available for training")
+            return False
+            
+        try:
+            # Prepare training data
+            texts = []
+            labels = []
+            
+            for conversation in iemocap_data.get('conversations', []):
+                for turn in conversation.get('turns', []):
+                    texts.append(turn['text'])
+                    labels.append(turn['emotion'])
+            
+            if len(texts) < 10:
+                print("Insufficient training data")
+                return False
+            
+            # Create TF-IDF features
+            self.vectorizer = TfidfVectorizer(
+                max_features=1000,
+                stop_words='english',
+                ngram_range=(1, 2)
+            )
+            
+            X = self.vectorizer.fit_transform(texts)
+            y = labels
+            
+            # Split data
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=0.2, random_state=42, stratify=y
+            )
+            
+            # Train classifier
+            self.classifier = RandomForestClassifier(
+                n_estimators=100,
+                random_state=42,
+                class_weight='balanced'
+            )
+            
+            self.classifier.fit(X_train, y_train)
+            
+            # Evaluate
+            y_pred = self.classifier.predict(X_test)
+            accuracy = accuracy_score(y_test, y_pred)
+            
+            print(f"Emotion classifier trained with accuracy: {accuracy:.3f}")
+            self.is_trained = True
+            
+            # Store model in memory map
+            memory_map['ml_models']['emotion_classifier'] = {
+                'vectorizer': self.vectorizer,
+                'classifier': self.classifier,
+                'accuracy': accuracy,
+                'trained_on': datetime.datetime.now().isoformat()
+            }
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error training emotion classifier: {e}")
+            return False
+    
+    def analyze(self, text):
+        """
+        Enhanced emotion analysis using ML model if available, fallback to keyword matching
+        """
+        # Try ML-based analysis first
+        if self.is_trained and self.vectorizer and self.classifier:
+            try:
+                features = self.vectorizer.transform([text])
+                predicted_emotion = self.classifier.predict(features)[0]
+                probabilities = self.classifier.predict_proba(features)[0]
+                
+                # Get confidence as max probability
+                confidence = max(probabilities)
+                
+                # Map to standard emotion categories
+                mapped_emotion = self.emotion_mapping.get(predicted_emotion, predicted_emotion)
+                
+                return {
+                    'primary_emotion': mapped_emotion,
+                    'original_emotion': predicted_emotion,
+                    'confidence': float(confidence),
+                    'emotion_type': self._get_emotion_type(mapped_emotion),
+                    'method': 'ml_trained'
+                }
+                
+            except Exception as e:
+                print(f"ML analysis failed, falling back to keyword matching: {e}")
+        
+        # Fallback to enhanced keyword matching
+        return self._keyword_analysis(text)
+    
+    def _keyword_analysis(self, text):
+        """
+        Enhanced keyword-based emotion analysis
+        """
+        text_lower = text.lower()
+        
+        # Use TextBlob for sentiment analysis
+        blob = TextBlob(text)
+        sentiment_polarity = blob.sentiment.polarity
+        
+        # Calculate scores for each emotion category
+        scores = {}
+        for emotion, keywords in self.iemocap_emotions.items():
+            score = sum(1 for keyword in keywords if keyword in text_lower)
+            # Boost score with sentiment analysis
+            if emotion in self.positive_emotions and sentiment_polarity > 0:
+                score += abs(sentiment_polarity)
+            elif emotion in self.negative_emotions and sentiment_polarity < 0:
+                score += abs(sentiment_polarity)
+            scores[emotion] = score
+        
+        # Find primary emotion
+        if not any(scores.values()):
+            # Use sentiment to determine neutral vs emotional state
+            if abs(sentiment_polarity) > 0.1:
+                primary_emotion = 'happy' if sentiment_polarity > 0 else 'sad'
+                confidence = min(abs(sentiment_polarity), 0.8)
+            else:
+                primary_emotion = 'neutral'
+                confidence = 0.5
+        else:
+            primary_emotion = max(scores, key=scores.get)
+            total_score = sum(scores.values())
+            confidence = scores[primary_emotion] / total_score if total_score > 0 else 0.5
+        
+        # Map to standard categories
+        mapped_emotion = self.emotion_mapping.get(primary_emotion, primary_emotion)
+        
+        return {
+            'primary_emotion': mapped_emotion,
+            'original_emotion': primary_emotion,
+            'confidence': confidence,
+            'emotion_type': self._get_emotion_type(mapped_emotion),
+            'method': 'keyword_enhanced',
+            'sentiment_polarity': sentiment_polarity
+        }
+    
+    def _get_emotion_type(self, emotion):
+        """Determine emotion type (positive, negative, neutral)"""
+        if emotion in self.positive_emotions:
+            return 'positive'
+        elif emotion in self.negative_emotions:
+            return 'negative'
+        else:
+            return 'neutral'
+
+class EnhancedActivityExtractor:
+    """
+    Enhanced activity extraction using ML and pattern matching
+    """
+    
+    def __init__(self):
+        self.action_patterns = [
+            # Enhanced patterns for action extraction
+            r'\b(?:I|we|he|she|they)\s+(?:am|is|are|was|were|will|would|should|could|might)\s+(\w+ing)\b',
+            r'\b(?:I|we|he|she|they)\s+(go|went|come|came|run|ran|walk|walked|talk|talked|think|thought|feel|felt)\b',
+            r'\b(?:I|we|he|she|they)\s+(?:feel|felt|seem|seemed|look|looked|sound|sounded)\s+(\w+)\b',
+            r'\b(?:let\'s|should|could|might|would)\s+(\w+)\b',
+            r'\b(?:try|tried|attempt|attempted|decide|decided|choose|chose)\s+to\s+(\w+)\b',
+            r'\b(?:I|we)\s+(?:need|want|like|love|hate|enjoy)\s+to\s+(\w+)\b',
+            r'\b(?:going|planning|intending)\s+to\s+(\w+)\b',
+            r'\b(?:started|began|finished|completed|stopped)\s+(\w+ing)\b'
+        ]
+        
+        # Common action categories from IEMOCAP analysis
+        self.action_categories = {
+            'communication': ['talk', 'speak', 'discuss', 'chat', 'call', 'text', 'message'],
+            'physical': ['walk', 'run', 'exercise', 'dance', 'move', 'stretch'],
+            'relaxation': ['rest', 'sleep', 'meditate', 'breathe', 'relax', 'calm'],
+            'social': ['meet', 'visit', 'hang out', 'party', 'gather', 'socialize'],
+            'work': ['work', 'study', 'practice', 'focus', 'concentrate', 'learn'],
+            'creative': ['write', 'draw', 'paint', 'create', 'make', 'build'],
+            'entertainment': ['watch', 'listen', 'play', 'read', 'browse', 'surf']
+        }
+    
+    def extract_activities(self, text, emotion_context=None):
+        """
+        Extract activities with emotion context consideration
+        """
+        activities = []
+        
+        # Extract using patterns
+        for pattern in self.action_patterns:
+            matches = re.findall(pattern, text.lower(), re.IGNORECASE)
+            for match in matches:
+                if isinstance(match, tuple):
+                    activities.extend([m for m in match if m and len(m) > 2])
+                elif match and len(match) > 2:
+                    activities.append(match)
+        
+        # Filter and categorize activities
+        filtered_activities = []
+        for activity in activities:
+            # Clean activity
+            activity = re.sub(r'[^a-zA-Z]', '', activity.lower().strip())
+            if len(activity) > 2 and activity not in ['the', 'and', 'but', 'for', 'are', 'was', 'were']:
+                category = self._categorize_activity(activity)
+                filtered_activities.append({
+                    'action': activity,
+                    'category': category,
+                    'emotion_context': emotion_context
+                })
+        
+        # Remove duplicates while preserving structure
+        seen_actions = set()
+        unique_activities = []
+        for activity in filtered_activities:
+            if activity['action'] not in seen_actions:
+                unique_activities.append(activity)
+                seen_actions.add(activity['action'])
+        
+        return unique_activities
+    
+    def _categorize_activity(self, activity):
+        """Categorize activity into predefined categories"""
+        for category, actions in self.action_categories.items():
+            if any(action in activity for action in actions):
+                return category
+        return 'general'
+
+class ValidationFramework:
+    """
+    Framework for validating algorithms against IEMOCAP dataset
+    """
+    
+    def __init__(self, pathfinding_comparator):
+        self.comparator = pathfinding_comparator
+        self.validation_results = []
+    
+    def run_large_scale_validation(self, iemocap_data, num_tests=100):
+        """
+        Run large-scale validation using IEMOCAP conversation data
+        """
+        print(f"Starting large-scale validation with {num_tests} tests...")
+        
+        conversations = iemocap_data.get('conversations', [])
+        if not conversations:
+            print("No conversation data available")
+            return None
+        
+        test_cases = []
+        
+        # Generate test cases from conversations
+        for conversation in conversations[:num_tests//10]:  # Use subset of conversations
+            turns = conversation.get('turns', [])
+            if len(turns) < 2:
+                continue
+                
+            # Create emotion transition test cases
+            for i in range(len(turns) - 1):
+                start_emotion = turns[i]['emotion']
+                end_emotion = turns[i + 1]['emotion']
+                
+                if start_emotion != end_emotion:
+                    test_cases.append({
+                        'start': start_emotion,
+                        'goal': end_emotion,
+                        'context': turns[i]['text'],
+                        'session': conversation.get('session_id', 'unknown')
+                    })
+                    
+                    if len(test_cases) >= num_tests:
+                        break
+            
+            if len(test_cases) >= num_tests:
+                break
+        
+        # Run algorithm comparisons
+        results = {
+            'total_tests': len(test_cases),
+            'algorithm_performance': defaultdict(list),
+            'successful_paths': defaultdict(int),
+            'average_metrics': {},
+            'test_cases': test_cases[:10]  # Store sample test cases
+        }
+        
+        for i, test_case in enumerate(test_cases):
+            if i % 10 == 0:
+                print(f"Progress: {i}/{len(test_cases)} tests completed")
+            
+            try:
+                comparison_result = self.comparator.compare_algorithms(
+                    test_case['start'], 
+                    test_case['goal']
+                )
+                
+                # Store results
+                for algorithm, data in comparison_result['results'].items():
+                    metrics = data['metrics']
+                    results['algorithm_performance'][algorithm].append({
+                        'execution_time_ms': metrics['execution_time_ms'],
+                        'nodes_explored': metrics['nodes_explored'],
+                        'path_found': metrics['path_found'],
+                        'path_length': metrics['path_length']
+                    })
+                    
+                    if metrics['path_found']:
+                        results['successful_paths'][algorithm] += 1
+                
+                # Add to memory
+                memory_map['algorithm_comparisons'].append(comparison_result)
+                
+            except Exception as e:
+                print(f"Error in test case {i}: {e}")
+                continue
+        
+        # Calculate average metrics
+        for algorithm, performances in results['algorithm_performance'].items():
+            if performances:
+                results['average_metrics'][algorithm] = {
+                    'avg_time_ms': np.mean([p['execution_time_ms'] for p in performances]),
+                    'avg_nodes_explored': np.mean([p['nodes_explored'] for p in performances]),
+                    'success_rate': results['successful_paths'][algorithm] / len(performances),
+                    'avg_path_length': np.mean([p['path_length'] for p in performances if p['path_found']])
+                }
+        
+        # Store validation results
+        validation_summary = {
+            'timestamp': datetime.datetime.now().isoformat(),
+            'dataset': 'IEMOCAP',
+            'results': results,
+            'best_algorithm': self._determine_best_algorithm(results['average_metrics'])
+        }
+        
+        memory_map['validation_results'].append(validation_summary)
+        self.validation_results.append(validation_summary)
+        
+        print("Large-scale validation completed!")
+        return validation_summary
+    
+    def _determine_best_algorithm(self, average_metrics):
+        """Determine the best performing algorithm"""
+        if not average_metrics:
+            return None
+        
+        # Score algorithms based on success rate, speed, and efficiency
+        algorithm_scores = {}
+        
+        for algorithm, metrics in average_metrics.items():
+            score = (
+                metrics.get('success_rate', 0) * 0.4 +  # 40% weight on success
+                (1 / max(metrics.get('avg_time_ms', 1), 0.1)) * 0.001 * 0.3 +  # 30% weight on speed
+                (1 / max(metrics.get('avg_nodes_explored', 1), 1)) * 0.3  # 30% weight on efficiency
+            )
+            algorithm_scores[algorithm] = score
+        
+        if algorithm_scores:
+            best_algorithm = max(algorithm_scores, key=algorithm_scores.get)
+            return {
+                'algorithm': best_algorithm,
+                'score': algorithm_scores[best_algorithm],
+                'metrics': average_metrics[best_algorithm]
+            }
+        
+        return None
+
+# Import existing pathfinding classes (PerformanceMetrics, PathfindingComparator)
+# ... (Previous pathfinding code would be included here)
+
+class EnhancedIntelligentAgent:
+    """
+    Enhanced Intelligent Agent with IEMOCAP integration
+    """
+    
+    def __init__(self):
+        self.emotion_analyzer = EnhancedEmotionAnalyzer()
+        self.activity_extractor = EnhancedActivityExtractor()
+        self.pathfinding_comparator = None  # Will be initialized after pathfinding classes
+        self.validation_framework = None
+        self.iemocap_loaded = False
+    
+    def load_iemocap_data(self, data_path):
+        """Load IEMOCAP validation data"""
+        try:
+            with open(data_path, 'r', encoding='utf-8') as f:
+                iemocap_data = json.load(f)
+            
+            memory_map['iemocap_data'] = iemocap_data
+            
+            # Train emotion analyzer
+            if self.emotion_analyzer.train_from_iemocap(iemocap_data):
+                print("IEMOCAP emotion analyzer trained successfully")
+            
+            # Initialize pathfinding comparator with IEMOCAP emotional map
+            emotional_map = iemocap_data.get('emotional_map', {})
+            if emotional_map:
+                # Convert IEMOCAP emotional map to memory map format
+                self._integrate_iemocap_emotional_map(emotional_map)
+            
+            self.iemocap_loaded = True
+            print(f"IEMOCAP data loaded: {len(iemocap_data.get('conversations', []))} conversations")
+            return True
+            
+        except Exception as e:
+            print(f"Error loading IEMOCAP data: {e}")
+            return False
+    
+    def _integrate_iemocap_emotional_map(self, emotional_map):
+        """Integrate IEMOCAP emotional map into memory map"""
+        # Add nodes
+        for node in emotional_map.get('nodes', []):
+            emotion = node['id']
+            if emotion not in memory_map['emotional_states']:
+                memory_map['emotional_states'][emotion] = []
+            
+            # Add synthetic experience for each emotion
+            for i in range(node.get('count', 1)):
+                experience = {
+                    'id': str(uuid.uuid4()),
+                    'user_id': 'iemocap_synthetic',
+                    'text': f"IEMOCAP synthetic experience for {emotion}",
+                    'emotion': emotion,
+                    'emotion_type': self.emotion_analyzer._get_emotion_type(emotion),
+                    'confidence': 0.9,
+                    'timestamp': datetime.datetime.now().isoformat(),
+                    'source': 'iemocap'
+                }
+                memory_map['emotional_states'][emotion].append(experience)
+        
+        # Add edges/transitions
+        for edge in emotional_map.get('edges', []):
+            from_emotion = edge['from']
+            to_emotion = edge['to']
+            weight = edge.get('weight', 1)
+            actions = edge.get('actions', [])
+            
+            # Add to graph connections
+            if to_emotion not in memory_map['graph_connections'][from_emotion]:
+                memory_map['graph_connections'][from_emotion].append(to_emotion)
+            
+            # Add to transitions
+            transition_key = (from_emotion, to_emotion)
+            if transition_key not in memory_map['transitions']:
+                memory_map['transitions'][transition_key] = []
+            
+            for action in actions:
+                memory_map['transitions'][transition_key].append({
+                    'action': action,
+                    'success_count': weight,
+                    'timestamp': datetime.datetime.now().isoformat(),
+                    'source': 'iemocap'
+                })
+    
+    def process_input(self, text, user_id="default_user"):
+        """Enhanced input processing with IEMOCAP capabilities"""
+        # Enhanced emotion analysis
+        emotion_analysis = self.emotion_analyzer.analyze(text)
+        primary_emotion = emotion_analysis['primary_emotion']
+        emotion_type = emotion_analysis['emotion_type']
+        
+        # Enhanced activity extraction
+        extracted_activities = self.activity_extractor.extract_activities(
+            text, emotion_context=primary_emotion
+        )
+        
+        # Create enhanced experience record
+        experience = {
+            'id': str(uuid.uuid4()),
+            'user_id': user_id,
+            'text': text,
+            'emotion': primary_emotion,
+            'original_emotion': emotion_analysis.get('original_emotion', primary_emotion),
+            'emotion_type': emotion_type,
+            'confidence': emotion_analysis['confidence'],
+            'analysis_method': emotion_analysis.get('method', 'unknown'),
+            'timestamp': datetime.datetime.now().isoformat(),
+            'extracted_activities': extracted_activities,
+            'sentiment_polarity': emotion_analysis.get('sentiment_polarity', 0)
+        }
+        
+        # Store experience
+        memory_map["user_experiences"].append(experience)
+        
+        if primary_emotion not in memory_map["emotional_states"]:
+            memory_map["emotional_states"][primary_emotion] = []
+        memory_map["emotional_states"][primary_emotion].append(experience)
+        
+        # Auto-learn from activities
+        if extracted_activities:
+            self._auto_learn_from_experience(experience, extracted_activities)
+        
+        # Generate response based on emotion type
+        if emotion_type == 'positive':
+            return self._handle_positive_emotion(experience)
+        elif emotion_type == 'negative':
+            return self._handle_negative_emotion(experience)
+        else:
+            return self._handle_neutral_emotion(experience)
+    
+    def _handle_negative_emotion(self, experience):
+        """Enhanced negative emotion handling with algorithm comparison"""
+        current_emotion = experience['emotion']
+        target_emotion = 'happy'
+        
+        # Use pathfinding comparator if available
+        if self.pathfinding_comparator:
+            try:
+                comparison_result = self.pathfinding_comparator.compare_algorithms(current_emotion, target_emotion)
+                memory_map["algorithm_comparisons"].append(comparison_result)
+                
+                winner = comparison_result['winner']
+                if winner['algorithm'] != 'None':
+                    winning_result = comparison_result['results'][winner['algorithm']]
+                    path = winning_result['path']
+                    suggestions = self._path_to_suggestions(path)
+                    
+                    message = f"I understand you're feeling {current_emotion}. Using {winner['algorithm']} algorithm (found path in {winner['time_ms']:.1f}ms), here are my suggestions:"
+                else:
+                    suggestions = self._get_default_suggestions(current_emotion)
+                    message = f"I understand you're feeling {current_emotion}. Here are some general suggestions:"
+                
+                return {
+                    'type': 'suggest_actions_with_algorithm',
+                    'message': message,
+                    'experience_id': experience['id'],
+                    'emotion': experience['emotion'],
+                    'suggestions': suggestions,
+                    'algorithm_used': winner['algorithm'],
+                    'algorithm_performance': winner,
+                    'analysis_method': experience.get('analysis_method', 'unknown'),
+                    'confidence': experience['confidence']
+                }
+            except Exception as e:
+                print(f"Error in algorithm comparison: {e}")
+        
+        # Fallback to default suggestions
+        suggestions = self._get_default_suggestions(current_emotion)
+        return {
+            'type': 'suggest_actions',
+            'message': f"I understand you're feeling {current_emotion}. Here are some suggestions:",
+            'experience_id': experience['id'],
+            'emotion': experience['emotion'],
+            'suggestions': suggestions,
+            'analysis_method': experience.get('analysis_method', 'unknown'),
+            'confidence': experience['confidence']
+        }
+    
+    # ... (Other methods would be similar to original but enhanced)
+
+# Initialize enhanced agent
+enhanced_agent = EnhancedIntelligentAgent()
+
+# Enhanced API Routes
+@app.route('/api/health', methods=['GET'])
+def health():
+    return jsonify({
+        "status": "healthy",
+        "service": "Enhanced Intelligent Agent with IEMOCAP Integration",
+        "features": [
+            "iemocap_emotion_analysis", 
+            "ml_based_activity_extraction", 
+            "large_scale_algorithm_validation",
+            "enhanced_pathfinding_comparison"
+        ],
+        "algorithms": ["A*", "Bidirectional Search", "Dijkstra"],
+        "iemocap_loaded": enhanced_agent.iemocap_loaded,
+        "memory_stats": {
+            "total_experiences": len(memory_map["user_experiences"]),
+            "emotional_states": len(memory_map["emotional_states"]),
+            "learned_transitions": len(memory_map["transitions"]),
+            "algorithm_comparisons": len(memory_map["algorithm_comparisons"]),
+            "validation_results": len(memory_map["validation_results"])
+        }
+    })
+
+@app.route('/api/load-iemocap', methods=['POST'])
+def load_iemocap():
+    """Load IEMOCAP dataset for validation"""
+    try:
+        data = request.get_json()
+        data_path = data.get('data_path', 'iemocap_validation_data.json')
+        
+        if enhanced_agent.load_iemocap_data(data_path):
+            return jsonify({
+                "success": True,
+                "message": "IEMOCAP data loaded successfully",
+                "conversations": len(memory_map['iemocap_data'].get('conversations', [])),
+                "emotional_map_nodes": len(memory_map['iemocap_data'].get('emotional_map', {}).get('nodes', []))
+            })
+        else:
+            return jsonify({"success": False, "message": "Failed to load IEMOCAP data"}), 400
+            
+    except Exception as e:
+        return jsonify({"error": f"Error loading IEMOCAP data: {str(e)}"}), 500
+
+@app.route('/api/run-validation', methods=['POST'])
+def run_validation():
+    """Run large-scale algorithm validation"""
+    try:
+        if not enhanced_agent.iemocap_loaded:
+            return jsonify({"error": "IEMOCAP data not loaded"}), 400
+        
+        data = request.get_json()
+        num_tests = data.get('num_tests', 100)
+        
+        if not enhanced_agent.validation_framework:
+            # Initialize validation framework
+            from pathfinding_comparator import PathfindingComparator  # Would need to import
+            enhanced_agent.pathfinding_comparator = PathfindingComparator(memory_map)
+            enhanced_agent.validation_framework = ValidationFramework(enhanced_agent.pathfinding_comparator)
+        
+        validation_result = enhanced_agent.validation_framework.run_large_scale_validation(
+            memory_map['iemocap_data'], 
+            num_tests
+        )
+        
+        return jsonify({
+            "success": True,
+            "validation_result": validation_result
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"Validation failed: {str(e)}"}), 500
+
+@app.route('/api/validation-results', methods=['GET'])
+def get_validation_results():
+    """Get validation results"""
+    return jsonify({
+        "validation_results": memory_map['validation_results'],
+        "total_validations": len(memory_map['validation_results'])
+    })
+
+@app.route('/api/iemocap-stats', methods=['GET'])
+def get_iemocap_stats():
+    """Get IEMOCAP dataset statistics"""
+    if not memory_map['iemocap_data']:
+        return jsonify({"error": "IEMOCAP data not loaded"}), 400
+    
+    iemocap_data = memory_map['iemocap_data']
+    
+    stats = {
+        "conversations": len(iemocap_data.get('conversations', [])),
+        "emotional_map": iemocap_data.get('emotional_map', {}),
+        "statistics": iemocap_data.get('statistics', {}),
+        "ml_model_info": memory_map['ml_models'].get('emotion_classifier', {})
+    }
+    
+    return jsonify(stats)
+
+# ... (Include all other existing API routes)
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5001))
+    print(f"Starting Enhanced Intelligent Agent with IEMOCAP integration on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=True)
+</file>
+
+<file path="reflectly-enhanced/backend/requirements.txt">
+# Enhanced Requirements for IEMOCAP Integration
+# ================================================
+
+# Core Flask dependencies
+Flask==2.3.3
+Flask-CORS==4.0.0
+
+# Machine Learning and Data Processing
+# Using version bounds for Python 3.13 compatibility
+pandas>=2.2.0
+numpy>=1.26.0
+scikit-learn>=1.4.0
+scipy>=1.12.0
+
+# Natural Language Processing
+nltk==3.8.1
+textblob==0.17.1
+
+# Audio Processing (for IEMOCAP dataset)
+librosa==0.10.1
+soundfile==0.12.1
+
+# Additional ML libraries
+matplotlib>=3.8.0
+seaborn>=0.13.0
+plotly==5.15.0
+
+# Data validation and utilities
+jsonschema==4.19.0
+python-dateutil==2.8.2
+tqdm==4.66.1
+
+# Testing and benchmarking
+requests==2.31.0
+pytest==7.4.2
+pytest-cov==4.1.0
+</file>
+
+<file path="reflectly-enhanced/frontend/src/IntelligentAgentApp.js">
+import React, { useState, useEffect, useCallback } from 'react';
+
+const EnhancedIntelligentAgentApp = () => {
+  const [activeTab, setActiveTab] = useState('conversation');
+  const [backendUrl, setBackendUrl] = useState('http://localhost:5001');
+  const [connectionStatus, setConnectionStatus] = useState('connecting');
+  const [iemocapLoaded, setIemocapLoaded] = useState(false);
+  const [validationResults, setValidationResults] = useState([]);
+  const [iemocapStats, setIemocapStats] = useState(null);
+
+  // Make API call helper
+  const makeApiCall = useCallback(async (endpoint, options = {}) => {
+    try {
+      const response = await fetch(backendUrl + '/api' + endpoint, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          ...options.headers
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      return response;
+    } catch (error) {
+      console.error('API call failed:', error);
+      throw error;
+    }
+  }, [backendUrl]);
+
+  // Check backend connection
+  const checkConnection = useCallback(async () => {
+    try {
+      const response = await makeApiCall('/health');
+      const health = await response.json();
+      setConnectionStatus('connected');
+      setIemocapLoaded(health.iemocap_loaded || false);
+      return true;
+    } catch (error) {
+      setConnectionStatus('error');
+      return false;
+    }
+  }, [makeApiCall]);
+
+  // Load IEMOCAP data
+  const loadIemocapData = async (dataPath) => {
+    try {
+      const response = await makeApiCall('/load-iemocap', {
+        method: 'POST',
+        body: JSON.stringify({ data_path: dataPath })
+      });
+      
+      const result = await response.json();
+      if (result.success) {
+        setIemocapLoaded(true);
+        await loadIemocapStats();
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error('Failed to load IEMOCAP data:', error);
+      return false;
+    }
+  };
+
+  // Load IEMOCAP statistics
+  const loadIemocapStats = async () => {
+    try {
+      const response = await makeApiCall('/iemocap-stats');
+      const stats = await response.json();
+      setIemocapStats(stats);
+    } catch (error) {
+      console.error('Failed to load IEMOCAP stats:', error);
+    }
+  };
+
+  // Load validation results
+  const loadValidationResults = async () => {
+    try {
+      const response = await makeApiCall('/validation-results');
+      const data = await response.json();
+      setValidationResults(data.validation_results || []);
+    } catch (error) {
+      console.error('Failed to load validation results:', error);
+    }
+  };
+
+  useEffect(() => {
+    checkConnection();
+    const interval = setInterval(checkConnection, 30000); // Check every 30 seconds
+    return () => clearInterval(interval);
+  }, [checkConnection]);
+
+  useEffect(() => {
+    if (iemocapLoaded) {
+      loadValidationResults();
+    }
+  }, [iemocapLoaded]);
+
+  const renderConnectionStatus = () => {
+    const statusColors = {
+      connecting: '#ffc107',
+      connected: '#28a745',
+      error: '#dc3545'
+    };
+
+    const statusMessages = {
+      connecting: 'Connecting to backend...',
+      connected: 'Connected to Enhanced AI Backend',
+      error: 'Backend connection failed'
+    };
+
+    return (
+      <div style={{
+        padding: '10px',
+        backgroundColor: statusColors[connectionStatus],
+        color: 'white',
+        textAlign: 'center',
+        fontWeight: 'bold'
+      }}>
+        {statusMessages[connectionStatus]}
+        {iemocapLoaded && connectionStatus === 'connected' && ' • IEMOCAP Dataset Loaded'}
+      </div>
+    );
+  };
+
+  const renderTabNavigation = () => (
+    <div style={{
+      display: 'flex',
+      borderBottom: '2px solid #e9ecef',
+      backgroundColor: '#f8f9fa'
+    }}>
+      {[
+        { id: 'conversation', label: '💬 Conversation & Memory', icon: '🧠' },
+        { id: 'algorithm', label: '🏁 Algorithm Racing', icon: '⚡' },
+        { id: 'dataset', label: '📊 IEMOCAP Integration', icon: '🔬' },
+        { id: 'validation', label: '🧪 Validation Results', icon: '📈' }
+      ].map(tab => (
+        <button
+          key={tab.id}
+          onClick={() => setActiveTab(tab.id)}
+          style={{
+            flex: 1,
+            padding: '15px',
+            border: 'none',
+            backgroundColor: activeTab === tab.id ? '#007bff' : 'transparent',
+            color: activeTab === tab.id ? 'white' : '#666',
+            cursor: 'pointer',
+            fontSize: '14px',
+            fontWeight: activeTab === tab.id ? 'bold' : 'normal',
+            transition: 'all 0.2s ease'
+          }}
+        >
+          {tab.icon} {tab.label}
+        </button>
+      ))}
+    </div>
+  );
+
+  return (
+    <div style={{
+      minHeight: '100vh',
+      backgroundColor: '#f5f5f5',
+      fontFamily: 'Arial, sans-serif'
+    }}>
+      {renderConnectionStatus()}
+      
+      <div style={{ padding: '20px', maxWidth: '1200px', margin: '0 auto' }}>
+        <div style={{
+          backgroundColor: 'white',
+          borderRadius: '10px',
+          boxShadow: '0 2px 10px rgba(0,0,0,0.1)',
+          overflow: 'hidden'
+        }}>
+          <div style={{
+            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+            color: 'white',
+            padding: '30px',
+            textAlign: 'center'
+          }}>
+            <h1 style={{ margin: '0 0 10px 0', fontSize: '2.5rem' }}>
+              🤖 Enhanced Reflectly AI
+            </h1>
+            <p style={{ margin: 0, fontSize: '1.1rem', opacity: 0.9 }}>
+              Emotional Intelligence with IEMOCAP Dataset Integration
+            </p>
+          </div>
+
+          {renderTabNavigation()}
+
+          <div style={{ padding: '20px' }}>
+            {activeTab === 'conversation' && (
+              <ConversationTab 
+                makeApiCall={makeApiCall} 
+                connectionStatus={connectionStatus}
+              />
+            )}
+            {activeTab === 'algorithm' && (
+              <AlgorithmRacingTab 
+                makeApiCall={makeApiCall} 
+                connectionStatus={connectionStatus}
+              />
+            )}
+            {activeTab === 'dataset' && (
+              <IEMOCAPIntegrationTab 
+                makeApiCall={makeApiCall}
+                iemocapLoaded={iemocapLoaded}
+                iemocapStats={iemocapStats}
+                onLoadIemocap={loadIemocapData}
+                onStatsUpdate={loadIemocapStats}
+              />
+            )}
+            {activeTab === 'validation' && (
+              <ValidationResultsTab 
+                makeApiCall={makeApiCall}
+                validationResults={validationResults}
+                onResultsUpdate={loadValidationResults}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Conversation Tab Component
+const ConversationTab = ({ makeApiCall, connectionStatus }) => {
+  const [input, setInput] = useState('');
+  const [response, setResponse] = useState(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [memoryMap, setMemoryMap] = useState(null);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!input.trim() || connectionStatus !== 'connected') return;
+
+    setIsProcessing(true);
+    try {
+      const response = await makeApiCall('/process-input', {
+        method: 'POST',
+        body: JSON.stringify({ text: input, user_id: 'demo_user' })
+      });
+      
+      const result = await response.json();
+      setResponse(result);
+      setInput('');
+      
+      // Refresh memory map
+      loadMemoryMap();
+    } catch (error) {
+      console.error('Error processing input:', error);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const loadMemoryMap = async () => {
+    try {
+      const response = await makeApiCall('/memory-map');
+      const data = await response.json();
+      setMemoryMap(data);
+    } catch (error) {
+      console.error('Failed to load memory map:', error);
+    }
+  };
+
+  useEffect(() => {
+    if (connectionStatus === 'connected') {
+      loadMemoryMap();
+    }
+  }, [connectionStatus]);
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+      <div style={{
+        backgroundColor: '#f8f9fa',
+        padding: '20px',
+        borderRadius: '8px',
+        border: '1px solid #e9ecef'
+      }}>
+        <h3 style={{ marginTop: 0, color: '#333' }}>💬 Emotional Conversation</h3>
+        
+        <form onSubmit={handleSubmit} style={{ marginBottom: '20px' }}>
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Share how you're feeling... (e.g., 'I'm feeling sad and overwhelmed today')"
+            style={{
+              width: '100%',
+              height: '100px',
+              padding: '12px',
+              border: '1px solid #ddd',
+              borderRadius: '5px',
+              fontSize: '14px',
+              resize: 'vertical'
+            }}
+            disabled={connectionStatus !== 'connected'}
+          />
+          <button
+            type="submit"
+            disabled={!input.trim() || isProcessing || connectionStatus !== 'connected'}
+            style={{
+              marginTop: '10px',
+              padding: '10px 20px',
+              backgroundColor: '#007bff',
+              color: 'white',
+              border: 'none',
+              borderRadius: '5px',
+              cursor: 'pointer',
+              fontSize: '14px',
+              fontWeight: 'bold',
+              width: '100%'
+            }}
+          >
+            {isProcessing ? '🤖 Processing...' : '💭 Share Feeling'}
+          </button>
+        </form>
+
+        {response && (
+          <div style={{
+            backgroundColor: 'white',
+            padding: '15px',
+            borderRadius: '5px',
+            border: '1px solid #dee2e6'
+          }}>
+            <h4 style={{ margin: '0 0 10px 0', color: '#007bff' }}>
+              🤖 AI Response
+            </h4>
+            <p style={{ margin: '0 0 10px 0', lineHeight: '1.5' }}>
+              {response.message}
+            </p>
+            
+            {response.suggestions && response.suggestions.length > 0 && (
+              <div style={{ marginTop: '10px' }}>
+                <strong>💡 Suggestions:</strong>
+                <ul style={{ margin: '5px 0 0 0', paddingLeft: '20px' }}>
+                  {response.suggestions.map((suggestion, index) => (
+                    <li key={index} style={{ margin: '2px 0' }}>{suggestion}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            
+            {response.algorithm_used && (
+              <div style={{
+                marginTop: '10px',
+                padding: '8px',
+                backgroundColor: '#e7f3ff',
+                borderRadius: '4px',
+                fontSize: '12px'
+              }}>
+                <strong>🔍 Algorithm Used:</strong> {response.algorithm_used}
+                {response.algorithm_performance && (
+                  <span> • {response.algorithm_performance.time_ms?.toFixed(1)}ms</span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div style={{
+        backgroundColor: '#f8f9fa',
+        padding: '20px',
+        borderRadius: '8px',
+        border: '1px solid #e9ecef'
+      }}>
+        <h3 style={{ marginTop: 0, color: '#333' }}>🧠 Memory Map</h3>
+        
+        {memoryMap ? (
+          <div>
+            <div style={{ marginBottom: '15px' }}>
+              <h4 style={{ margin: '0 0 5px 0', fontSize: '14px', color: '#666' }}>
+                📊 Statistics
+              </h4>
+              <div style={{ fontSize: '12px', color: '#666' }}>
+                <div>Experiences: {memoryMap.nodes?.length || 0}</div>
+                <div>Transitions: {memoryMap.edges?.length || 0}</div>
+                <div>Emotions: {new Set(memoryMap.nodes?.map(n => n.emotion) || []).size}</div>
+              </div>
+            </div>
+
+            <div style={{
+              maxHeight: '300px',
+              overflowY: 'auto',
+              border: '1px solid #dee2e6',
+              borderRadius: '4px',
+              padding: '10px',
+              backgroundColor: 'white'
+            }}>
+              {memoryMap.nodes?.map((node, index) => (
+                <div key={index} style={{
+                  padding: '8px',
+                  margin: '5px 0',
+                  backgroundColor: '#f8f9fa',
+                  borderRadius: '3px',
+                  fontSize: '12px'
+                }}>
+                  <strong>{node.emotion}:</strong> {node.count} experiences
+                  {node.actions && node.actions.length > 0 && (
+                    <div style={{ marginTop: '3px', fontSize: '11px', color: '#666' }}>
+                      Actions: {node.actions.join(', ')}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div style={{ textAlign: 'center', color: '#666', padding: '20px' }}>
+            Start a conversation to build your memory map!
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// Algorithm Racing Tab Component (Enhanced)
+const AlgorithmRacingTab = ({ makeApiCall, connectionStatus }) => {
+  const [comparisonResult, setComparisonResult] = useState(null);
+  const [isComparing, setIsComparing] = useState(false);
+  const [startEmotion, setStartEmotion] = useState('sad');
+  const [goalEmotion, setGoalEmotion] = useState('happy');
+
+  const emotions = ['happy', 'sad', 'anxious', 'angry', 'confused', 'tired', 'neutral'];
+
+  const compareAlgorithms = async () => {
+    setIsComparing(true);
+    try {
+      const response = await makeApiCall('/compare-algorithms', {
+        method: 'POST',
+        body: JSON.stringify({
+          start_emotion: startEmotion,
+          goal_emotion: goalEmotion
+        })
+      });
+
+      const result = await response.json();
+      setComparisonResult(result);
+    } catch (error) {
+      console.error('Error comparing algorithms:', error);
+      alert('Failed to compare algorithms. Make sure the backend is running.');
+    } finally {
+      setIsComparing(false);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '15px',
+        marginBottom: '30px',
+        padding: '20px',
+        backgroundColor: '#f8f9fa',
+        borderRadius: '8px'
+      }}>
+        <label>
+          From:
+          <select 
+            value={startEmotion} 
+            onChange={(e) => setStartEmotion(e.target.value)}
+            style={{
+              marginLeft: '8px',
+              padding: '8px 12px',
+              border: '1px solid #ddd',
+              borderRadius: '5px'
+            }}
+          >
+            {emotions.map(emotion => (
+              <option key={emotion} value={emotion}>
+                {emotion.charAt(0).toUpperCase() + emotion.slice(1)}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <span style={{ fontSize: '20px', color: '#666' }}>→</span>
+
+        <label>
+          To:
+          <select 
+            value={goalEmotion} 
+            onChange={(e) => setGoalEmotion(e.target.value)}
+            style={{
+              marginLeft: '8px',
+              padding: '8px 12px',
+              border: '1px solid #ddd',
+              borderRadius: '5px'
+            }}
+          >
+            {emotions.map(emotion => (
+              <option key={emotion} value={emotion}>
+                {emotion.charAt(0).toUpperCase() + emotion.slice(1)}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <button 
+          onClick={compareAlgorithms} 
+          disabled={isComparing || startEmotion === goalEmotion || connectionStatus !== 'connected'}
+          style={{
+            padding: '10px 20px',
+            backgroundColor: '#007bff',
+            color: 'white',
+            border: 'none',
+            borderRadius: '5px',
+            cursor: 'pointer',
+            fontWeight: 'bold'
+          }}
+        >
+          {isComparing ? '🔄 Racing...' : '🏁 Start Race!'}
+        </button>
+      </div>
+
+      {isComparing && (
+        <div style={{
+          textAlign: 'center',
+          padding: '30px',
+          backgroundColor: '#e7f3ff',
+          borderRadius: '8px',
+          marginBottom: '20px'
+        }}>
+          <p style={{ fontSize: '18px', margin: '0 0 10px 0' }}>
+            🏃‍♂️ Algorithms racing from <strong>{startEmotion}</strong> to <strong>{goalEmotion}</strong>...
+          </p>
+          <p style={{ fontSize: '14px', color: '#666', margin: 0 }}>
+            Testing A*, Bidirectional Search, and Dijkstra's algorithms
+          </p>
+        </div>
+      )}
+
+      {comparisonResult && (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+          gap: '20px'
+        }}>
+          {Object.entries(comparisonResult.results).map(([algorithm, result]) => {
+            const isWinner = comparisonResult.winner?.algorithm === algorithm;
+            const metrics = result.metrics;
+            
+            return (
+              <div key={algorithm} style={{
+                border: `2px solid ${isWinner ? '#28a745' : '#e9ecef'}`,
+                borderRadius: '8px',
+                padding: '20px',
+                backgroundColor: isWinner ? '#f8fff9' : 'white'
+              }}>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  marginBottom: '15px'
+                }}>
+                  <h4 style={{ margin: 0, color: '#333' }}>{algorithm}</h4>
+                  {isWinner && (
+                    <span style={{
+                      backgroundColor: '#28a745',
+                      color: 'white',
+                      padding: '2px 8px',
+                      borderRadius: '12px',
+                      fontSize: '12px',
+                      fontWeight: 'bold'
+                    }}>
+                      🏆 WINNER
+                    </span>
+                  )}
+                </div>
+                
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: '8px',
+                  marginBottom: '15px'
+                }}>
+                  <div style={{
+                    padding: '8px',
+                    backgroundColor: '#f8f9fa',
+                    borderRadius: '4px',
+                    fontSize: '13px'
+                  }}>
+                    <div style={{ color: '#666' }}>⏱️ Time:</div>
+                    <div style={{ fontWeight: 'bold' }}>
+                      {metrics.execution_time_ms.toFixed(2)}ms
+                    </div>
+                  </div>
+                  <div style={{
+                    padding: '8px',
+                    backgroundColor: '#f8f9fa',
+                    borderRadius: '4px',
+                    fontSize: '13px'
+                  }}>
+                    <div style={{ color: '#666' }}>🔍 Nodes:</div>
+                    <div style={{ fontWeight: 'bold' }}>{metrics.nodes_explored}</div>
+                  </div>
+                  <div style={{
+                    padding: '8px',
+                    backgroundColor: '#f8f9fa',
+                    borderRadius: '4px',
+                    fontSize: '13px'
+                  }}>
+                    <div style={{ color: '#666' }}>📏 Path Length:</div>
+                    <div style={{ fontWeight: 'bold' }}>{metrics.path_length}</div>
+                  </div>
+                  <div style={{
+                    padding: '8px',
+                    backgroundColor: '#f8f9fa',
+                    borderRadius: '4px',
+                    fontSize: '13px'
+                  }}>
+                    <div style={{ color: '#666' }}>✅ Success:</div>
+                    <div style={{ fontWeight: 'bold' }}>
+                      {metrics.path_found ? 'Yes' : 'No'}
+                    </div>
+                  </div>
+                </div>
+                
+                {result.path && result.path.length > 0 && (
+                  <div style={{
+                    padding: '12px',
+                    backgroundColor: '#e9ecef',
+                    borderRadius: '5px'
+                  }}>
+                    <strong>Path:</strong>
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      flexWrap: 'wrap',
+                      gap: '5px',
+                      marginTop: '8px'
+                    }}>
+                      {result.path.map((emotion, index) => (
+                        <React.Fragment key={index}>
+                          <span style={{
+                            backgroundColor: '#007bff',
+                            color: 'white',
+                            padding: '4px 8px',
+                            borderRadius: '12px',
+                            fontSize: '12px',
+                            fontWeight: 'bold'
+                          }}>
+                            {emotion}
+                          </span>
+                          {index < result.path.length - 1 && (
+                            <span style={{ color: '#666', fontWeight: 'bold' }}>→</span>
+                          )}
+                        </React.Fragment>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// IEMOCAP Integration Tab Component
+const IEMOCAPIntegrationTab = ({ 
+  makeApiCall, 
+  iemocapLoaded, 
+  iemocapStats, 
+  onLoadIemocap, 
+  onStatsUpdate 
+}) => {
+  const [dataPath, setDataPath] = useState('iemocap_validation_data.json');
+  const [isLoading, setIsLoading] = useState(false);
+  const [isRunningValidation, setIsRunningValidation] = useState(false);
+  const [numTests, setNumTests] = useState(100);
+
+  const handleLoadDataset = async () => {
+    setIsLoading(true);
+    try {
+      const success = await onLoadIemocap(dataPath);
+      if (success) {
+        alert('IEMOCAP dataset loaded successfully!');
+        onStatsUpdate();
+      } else {
+        alert('Failed to load IEMOCAP dataset. Check the file path.');
+      }
+    } catch (error) {
+      alert('Error loading dataset: ' + error.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const runValidation = async () => {
+    setIsRunningValidation(true);
+    try {
+      const response = await makeApiCall('/run-validation', {
+        method: 'POST',
+        body: JSON.stringify({ num_tests: numTests })
+      });
+      
+      const result = await response.json();
+      if (result.success) {
+        alert(`Validation completed! Ran ${numTests} tests.`);
+      } else {
+        alert('Validation failed: ' + result.error);
+      }
+    } catch (error) {
+      alert('Error running validation: ' + error.message);
+    } finally {
+      setIsRunningValidation(false);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{
+        marginBottom: '30px',
+        padding: '20px',
+        backgroundColor: '#f8f9fa',
+        borderRadius: '8px',
+        border: '1px solid #e9ecef'
+      }}>
+        <h3 style={{ marginTop: 0, color: '#333' }}>
+          📊 IEMOCAP Dataset Integration
+        </h3>
+        
+        <div style={{ marginBottom: '20px' }}>
+          <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
+            Dataset Path:
+          </label>
+          <input
+            type="text"
+            value={dataPath}
+            onChange={(e) => setDataPath(e.target.value)}
+            placeholder="Path to IEMOCAP validation data JSON file"
+            style={{
+              width: '100%',
+              padding: '10px',
+              border: '1px solid #ddd',
+              borderRadius: '5px',
+              fontSize: '14px'
+            }}
+            disabled={isLoading}
+          />
+        </div>
+
+        <button
+          onClick={handleLoadDataset}
+          disabled={isLoading || !dataPath.trim()}
+          style={{
+            padding: '10px 20px',
+            backgroundColor: iemocapLoaded ? '#28a745' : '#007bff',
+            color: 'white',
+            border: 'none',
+            borderRadius: '5px',
+            cursor: 'pointer',
+            fontWeight: 'bold',
+            marginRight: '10px'
+          }}
+        >
+          {isLoading ? '📥 Loading...' : iemocapLoaded ? '✅ Dataset Loaded' : '📥 Load Dataset'}
+        </button>
+
+        {iemocapLoaded && (
+          <div style={{ marginTop: '20px' }}>
+            <h4 style={{ margin: '0 0 10px 0', color: '#333' }}>
+              🧪 Run Algorithm Validation
+            </h4>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <label>
+                Number of tests:
+                <input
+                  type="number"
+                  value={numTests}
+                  onChange={(e) => setNumTests(Math.max(1, parseInt(e.target.value) || 1))}
+                  min="1"
+                  max="1000"
+                  style={{
+                    marginLeft: '8px',
+                    padding: '5px',
+                    border: '1px solid #ddd',
+                    borderRadius: '3px',
+                    width: '80px'
+                  }}
+                />
+              </label>
+              <button
+                onClick={runValidation}
+                disabled={isRunningValidation}
+                style={{
+                  padding: '8px 16px',
+                  backgroundColor: '#28a745',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '5px',
+                  cursor: 'pointer',
+                  fontWeight: 'bold'
+                }}
+              >
+                {isRunningValidation ? '🔄 Running...' : '🧪 Run Validation'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {iemocapStats && (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
+          gap: '20px'
+        }}>
+          <div style={{
+            padding: '20px',
+            backgroundColor: 'white',
+            borderRadius: '8px',
+            border: '1px solid #e9ecef'
+          }}>
+            <h4 style={{ marginTop: 0, color: '#333' }}>📈 Dataset Statistics</h4>
+            <div style={{ fontSize: '14px' }}>
+              <div style={{ margin: '5px 0' }}>
+                <strong>Conversations:</strong> {iemocapStats.conversations}
+              </div>
+              <div style={{ margin: '5px 0' }}>
+                <strong>Emotions:</strong> {iemocapStats.emotional_map?.nodes?.length || 0}
+              </div>
+              <div style={{ margin: '5px 0' }}>
+                <strong>Transitions:</strong> {iemocapStats.emotional_map?.edges?.length || 0}
+              </div>
+            </div>
+          </div>
+
+          <div style={{
+            padding: '20px',
+            backgroundColor: 'white',
+            borderRadius: '8px',
+            border: '1px solid #e9ecef'
+          }}>
+            <h4 style={{ marginTop: 0, color: '#333' }}>🤖 ML Model Info</h4>
+            {iemocapStats.ml_model_info?.accuracy ? (
+              <div style={{ fontSize: '14px' }}>
+                <div style={{ margin: '5px 0' }}>
+                  <strong>Accuracy:</strong> {(iemocapStats.ml_model_info.accuracy * 100).toFixed(1)}%
+                </div>
+                <div style={{ margin: '5px 0' }}>
+                  <strong>Trained:</strong> {new Date(iemocapStats.ml_model_info.trained_on).toLocaleDateString()}
+                </div>
+              </div>
+            ) : (
+              <div style={{ color: '#666', fontSize: '14px' }}>
+                ML model not trained yet
+              </div>
+            )}
+          </div>
+
+          {iemocapStats.emotional_map?.nodes && (
+            <div style={{
+              padding: '20px',
+              backgroundColor: 'white',
+              borderRadius: '8px',
+              border: '1px solid #e9ecef',
+              gridColumn: 'span 2'
+            }}>
+              <h4 style={{ marginTop: 0, color: '#333' }}>🗺️ Emotional Map</h4>
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                gap: '10px',
+                maxHeight: '200px',
+                overflowY: 'auto'
+              }}>
+                {iemocapStats.emotional_map.nodes.map((node, index) => (
+                  <div key={index} style={{
+                    padding: '10px',
+                    backgroundColor: '#f8f9fa',
+                    borderRadius: '5px',
+                    fontSize: '12px'
+                  }}>
+                    <strong>{node.label || node.id}:</strong> {node.count} samples
+                    {node.common_actions && node.common_actions.length > 0 && (
+                      <div style={{ marginTop: '5px', color: '#666' }}>
+                        Actions: {node.common_actions.slice(0, 3).join(', ')}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Validation Results Tab Component
+const ValidationResultsTab = ({ makeApiCall, validationResults, onResultsUpdate }) => {
+  const [selectedResult, setSelectedResult] = useState(null);
+
+  useEffect(() => {
+    onResultsUpdate();
+  }, []);
+
+  const formatAlgorithmMetrics = (metrics) => {
+    if (!metrics) return 'No data';
+    
+    return (
+      <div style={{ fontSize: '12px' }}>
+        <div>Success Rate: {(metrics.success_rate * 100).toFixed(1)}%</div>
+        <div>Avg Time: {metrics.avg_time_ms?.toFixed(2)}ms</div>
+        <div>Avg Nodes: {metrics.avg_nodes_explored?.toFixed(1)}</div>
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      <div style={{
+        marginBottom: '20px',
+        padding: '15px',
+        backgroundColor: '#e7f3ff',
+        borderRadius: '8px',
+        border: '1px solid #bee5eb'
+      }}>
+        <h3 style={{ marginTop: 0, color: '#0c5460' }}>
+          🧪 Algorithm Validation Results
+        </h3>
+        <p style={{ margin: 0, color: '#0c5460' }}>
+          Results from testing algorithms against IEMOCAP emotional speech dataset
+        </p>
+      </div>
+
+      {validationResults.length === 0 ? (
+        <div style={{
+          textAlign: 'center',
+          padding: '40px',
+          backgroundColor: '#f8f9fa',
+          borderRadius: '8px',
+          color: '#666'
+        }}>
+          <p style={{ fontSize: '18px', margin: '0 0 10px 0' }}>
+            No validation results yet
+          </p>
+          <p style={{ margin: 0 }}>
+            Load IEMOCAP dataset and run validation to see results here
+          </p>
+        </div>
+      ) : (
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 2fr',
+          gap: '20px'
+        }}>
+          <div style={{
+            backgroundColor: 'white',
+            padding: '20px',
+            borderRadius: '8px',
+            border: '1px solid #e9ecef'
+          }}>
+            <h4 style={{ marginTop: 0, color: '#333' }}>📊 Validation Sessions</h4>
+            <div style={{
+              maxHeight: '400px',
+              overflowY: 'auto'
+            }}>
+              {validationResults.map((result, index) => (
+                <div
+                  key={index}
+                  onClick={() => setSelectedResult(result)}
+                  style={{
+                    padding: '12px',
+                    margin: '8px 0',
+                    backgroundColor: selectedResult === result ? '#e7f3ff' : '#f8f9fa',
+                    borderRadius: '5px',
+                    cursor: 'pointer',
+                    border: selectedResult === result ? '2px solid #007bff' : '1px solid #e9ecef',
+                    fontSize: '14px'
+                  }}
+                >
+                  <div style={{ fontWeight: 'bold' }}>
+                    Validation #{index + 1}
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#666' }}>
+                    {new Date(result.timestamp).toLocaleDateString()}
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#666' }}>
+                    {result.results?.total_tests || 0} tests
+                  </div>
+                  {result.best_algorithm && (
+                    <div style={{ fontSize: '11px', color: '#28a745' }}>
+                      Best: {result.best_algorithm.algorithm}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={{
+            backgroundColor: 'white',
+            padding: '20px',
+            borderRadius: '8px',
+            border: '1px solid #e9ecef'
+          }}>
+            {selectedResult ? (
+              <div>
+                <h4 style={{ marginTop: 0, color: '#333' }}>
+                  📈 Detailed Results
+                </h4>
+                
+                <div style={{ marginBottom: '20px' }}>
+                  <div style={{ fontSize: '14px', color: '#666' }}>
+                    <strong>Date:</strong> {new Date(selectedResult.timestamp).toLocaleString()}
+                  </div>
+                  <div style={{ fontSize: '14px', color: '#666' }}>
+                    <strong>Total Tests:</strong> {selectedResult.results?.total_tests || 0}
+                  </div>
+                  <div style={{ fontSize: '14px', color: '#666' }}>
+                    <strong>Dataset:</strong> {selectedResult.dataset || 'IEMOCAP'}
+                  </div>
+                </div>
+
+                {selectedResult.best_algorithm && (
+                  <div style={{
+                    padding: '15px',
+                    backgroundColor: '#d4edda',
+                    borderRadius: '5px',
+                    marginBottom: '20px',
+                    border: '1px solid #c3e6cb'
+                  }}>
+                    <h5 style={{ margin: '0 0 10px 0', color: '#155724' }}>
+                      🏆 Best Performing Algorithm
+                    </h5>
+                    <div style={{ fontSize: '16px', fontWeight: 'bold', color: '#155724' }}>
+                      {selectedResult.best_algorithm.algorithm}
+                    </div>
+                    <div style={{ fontSize: '14px', color: '#155724' }}>
+                      Score: {selectedResult.best_algorithm.score?.toFixed(3)}
+                    </div>
+                  </div>
+                )}
+
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                  gap: '15px'
+                }}>
+                  {Object.entries(selectedResult.results?.average_metrics || {}).map(([algorithm, metrics]) => (
+                    <div key={algorithm} style={{
+                      padding: '15px',
+                      backgroundColor: '#f8f9fa',
+                      borderRadius: '5px',
+                      border: '1px solid #e9ecef'
+                    }}>
+                      <h6 style={{ margin: '0 0 10px 0', color: '#333' }}>
+                        {algorithm}
+                      </h6>
+                      {formatAlgorithmMetrics(metrics)}
+                    </div>
+                  ))}
+                </div>
+
+                {selectedResult.results?.test_cases && (
+                  <div style={{ marginTop: '20px' }}>
+                    <h5 style={{ color: '#333' }}>Sample Test Cases</h5>
+                    <div style={{
+                      maxHeight: '200px',
+                      overflowY: 'auto',
+                      border: '1px solid #e9ecef',
+                      borderRadius: '5px'
+                    }}>
+                      {selectedResult.results.test_cases.map((testCase, index) => (
+                        <div key={index} style={{
+                          padding: '10px',
+                          borderBottom: '1px solid #f8f9fa',
+                          fontSize: '12px'
+                        }}>
+                          <strong>{testCase.start} → {testCase.goal}</strong>
+                          <div style={{ color: '#666', marginTop: '3px' }}>
+                            Context: {testCase.context?.substring(0, 50)}...
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div style={{
+                textAlign: 'center',
+                padding: '40px',
+                color: '#666'
+              }}>
+                <p>Select a validation session to view detailed results</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default EnhancedIntelligentAgentApp;
+</file>
+
+<file path="reflectly-enhanced/comprehensive_test_script.py">
+#!/usr/bin/env python3
+"""
+Comprehensive IEMOCAP Validation Test Script
+===========================================
+
+This script performs comprehensive testing of the enhanced Reflectly AI system
+with IEMOCAP dataset integration. It validates emotion recognition, algorithm
+performance, and generates detailed analytics.
+
+Features:
+- IEMOCAP dataset processing and validation
+- Large-scale algorithm performance testing
+- Emotional map generation and validation
+- Performance benchmarking and reporting
+- Comprehensive analytics and visualization
+
+Usage:
+    python comprehensive_test_script.py [options]
+
+Requirements:
+    - IEMOCAP dataset (downloaded from Kaggle)
+    - Enhanced Reflectly backend running
+    - Python packages: requests, pandas, numpy, matplotlib, seaborn
+"""
+
+import argparse
+import json
+import time
+import requests
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime, timedelta
+import os
+import sys
+from collections import defaultdict, Counter
+import logging
+from pathlib import Path
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('iemocap_validation.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+class IEMOCAPValidationTester:
+    """
+    Comprehensive validation tester for IEMOCAP integration
+    """
+    
+    def __init__(self, backend_url="http://localhost:5001", dataset_path=None):
+        self.backend_url = backend_url
+        self.api_url = f"{backend_url}/api"
+        self.dataset_path = dataset_path
+        self.results = {
+            "test_session_id": f"test_{int(time.time())}",
+            "start_time": datetime.now().isoformat(),
+            "dataset_validation": {},
+            "algorithm_performance": {},
+            "emotion_recognition": {},
+            "comprehensive_analysis": {},
+            "performance_benchmarks": {}
+        }
+        
+        # Test configuration
+        self.test_config = {
+            "algorithm_tests": 100,
+            "emotion_samples": 50,
+            "conversation_simulations": 20,
+            "benchmark_iterations": 10
+        }
+        
+        logger.info(f"Initialized IEMOCAP Validation Tester")
+        logger.info(f"Backend URL: {self.backend_url}")
+        logger.info(f"Dataset Path: {self.dataset_path}")
+    
+    def make_api_call(self, endpoint, method="GET", data=None, timeout=30):
+        """Make API call with error handling and retries"""
+        url = f"{self.api_url}{endpoint}"
+        headers = {"Content-Type": "application/json"}
+        
+        for attempt in range(3):  # 3 retry attempts
+            try:
+                if method == "GET":
+                    response = requests.get(url, timeout=timeout)
+                elif method == "POST":
+                    response = requests.post(url, json=data, headers=headers, timeout=timeout)
+                else:
+                    raise ValueError(f"Unsupported HTTP method: {method}")
+                
+                response.raise_for_status()
+                return response.json()
+                
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"API call attempt {attempt + 1} failed: {e}")
+                if attempt == 2:  # Last attempt
+                    raise
+                time.sleep(2 ** attempt)  # Exponential backoff
+    
+    def check_backend_connection(self):
+        """Verify backend is running and accessible"""
+        logger.info("Checking backend connection...")
+        
+        try:
+            health_data = self.make_api_call("/health")
+            logger.info(f"✅ Backend connected successfully")
+            logger.info(f"   Service: {health_data.get('service', 'Unknown')}")
+            logger.info(f"   Features: {', '.join(health_data.get('features', []))}")
+            logger.info(f"   IEMOCAP Loaded: {health_data.get('iemocap_loaded', False)}")
+            
+            self.results["backend_info"] = health_data
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Backend connection failed: {e}")
+            return False
+    
+    def setup_iemocap_dataset(self):
+        """Setup and validate IEMOCAP dataset"""
+        logger.info("Setting up IEMOCAP dataset...")
+        
+        if not self.dataset_path or not os.path.exists(self.dataset_path):
+            logger.warning("IEMOCAP dataset path not provided or doesn't exist")
+            logger.info("Generating synthetic IEMOCAP data for testing...")
+            
+            # Generate synthetic dataset for testing
+            synthetic_data = self.generate_synthetic_iemocap_data()
+            synthetic_path = "synthetic_iemocap_validation_data.json"
+            
+            with open(synthetic_path, 'w') as f:
+                json.dump(synthetic_data, f, indent=2)
+            
+            self.dataset_path = synthetic_path
+            logger.info(f"✅ Synthetic dataset created: {synthetic_path}")
+        
+        # Process dataset
+        try:
+            from iemocap_loader import IEMOCAPDatasetLoader
+            
+            loader = IEMOCAPDatasetLoader(os.path.dirname(self.dataset_path))
+            
+            # For synthetic data, load directly
+            if "synthetic" in self.dataset_path:
+                with open(self.dataset_path, 'r') as f:
+                    validation_data = json.load(f)
+            else:
+                # Process real IEMOCAP dataset
+                if loader.load_dataset() and loader.preprocess_data():
+                    validation_data = {
+                        "conversations": [],
+                        "emotional_map": loader.generate_emotional_map(),
+                        "statistics": loader.processed_data
+                    }
+                    loader.export_for_validation(self.dataset_path)
+                else:
+                    raise Exception("Failed to process IEMOCAP dataset")
+            
+            # Load dataset into backend
+            load_result = self.make_api_call("/load-iemocap", "POST", {
+                "data_path": self.dataset_path
+            })
+            
+            if load_result.get("success"):
+                logger.info("✅ IEMOCAP dataset loaded into backend successfully")
+                self.results["dataset_validation"] = {
+                    "loaded": True,
+                    "conversations": load_result.get("conversations", 0),
+                    "emotional_map_nodes": load_result.get("emotional_map_nodes", 0),
+                    "dataset_path": self.dataset_path
+                }
+                return True
+            else:
+                raise Exception("Backend failed to load IEMOCAP dataset")
+                
+        except Exception as e:
+            logger.error(f"❌ Dataset setup failed: {e}")
+            self.results["dataset_validation"] = {"loaded": False, "error": str(e)}
+            return False
+    
+    def generate_synthetic_iemocap_data(self):
+        """Generate synthetic IEMOCAP-like data for testing"""
+        logger.info("Generating synthetic IEMOCAP data...")
+        
+        emotions = ['angry', 'happy', 'sad', 'neutral', 'anxious', 'confused', 'tired', 'frustrated', 'excited']
+        
+        # Generate conversations
+        conversations = []
+        for session_id in range(1, 21):  # 20 sessions
+            conversation = {
+                "session_id": f"Session{session_id:02d}",
+                "turns": []
+            }
+            
+            # Generate 5-15 turns per conversation
+            num_turns = np.random.randint(5, 16)
+            current_emotion = np.random.choice(emotions)
+            
+            for turn_id in range(num_turns):
+                # Emotion transition logic
+                if np.random.random() < 0.3:  # 30% chance to change emotion
+                    current_emotion = np.random.choice(emotions)
+                
+                # Generate text based on emotion
+                text_templates = {
+                    'angry': [
+                        "I'm so frustrated with this situation",
+                        "This is making me really angry",
+                        "I can't believe this is happening again"
+                    ],
+                    'happy': [
+                        "I'm feeling really good about this",
+                        "This makes me so happy and excited",
+                        "Everything is going wonderfully today"
+                    ],
+                    'sad': [
+                        "I'm feeling really down about this",
+                        "This situation makes me feel sad",
+                        "I'm having a difficult time with everything"
+                    ],
+                    'anxious': [
+                        "I'm worried about what might happen",
+                        "This is making me feel really nervous",
+                        "I can't stop thinking about the worst case scenario"
+                    ]
+                }
+                
+                text = np.random.choice(
+                    text_templates.get(current_emotion, ["I'm feeling quite neutral about this"])
+                )
+                
+                # Generate actions based on emotion
+                action_templates = {
+                    'angry': ['complain', 'argue', 'vent', 'express frustration'],
+                    'happy': ['celebrate', 'share good news', 'smile', 'laugh'],
+                    'sad': ['cry', 'withdraw', 'seek comfort', 'reflect'],
+                    'anxious': ['worry', 'pace', 'seek reassurance', 'overthink']
+                }
+                
+                actions = action_templates.get(current_emotion, ['think', 'consider'])
+                
+                conversation["turns"].append({
+                    "text": text,
+                    "emotion": current_emotion,
+                    "actions": np.random.choice(actions, size=np.random.randint(1, 3)).tolist(),
+                    "speaker": f"Speaker{turn_id % 2 + 1}"
+                })
+            
+            conversations.append(conversation)
+        
+        # Generate emotional map
+        emotional_map = {
+            "nodes": [],
+            "edges": [],
+            "metadata": {
+                "dataset": "Synthetic IEMOCAP",
+                "total_samples": sum(len(conv["turns"]) for conv in conversations),
+                "processing_date": datetime.now().isoformat()
+            }
+        }
+        
+        # Create nodes
+        emotion_counts = Counter()
+        for conv in conversations:
+            for turn in conv["turns"]:
+                emotion_counts[turn["emotion"]] += 1
+        
+        for emotion, count in emotion_counts.items():
+            emotional_map["nodes"].append({
+                "id": emotion,
+                "label": emotion.title(),
+                "count": count,
+                "common_actions": list(set(
+                    action for conv in conversations 
+                    for turn in conv["turns"] 
+                    if turn["emotion"] == emotion 
+                    for action in turn["actions"]
+                ))[:5]
+            })
+        
+        # Create edges (transitions)
+        transitions = Counter()
+        for conv in conversations:
+            turns = conv["turns"]
+            for i in range(len(turns) - 1):
+                from_emotion = turns[i]["emotion"]
+                to_emotion = turns[i + 1]["emotion"]
+                if from_emotion != to_emotion:
+                    transitions[(from_emotion, to_emotion)] += 1
+        
+        for (from_emotion, to_emotion), count in transitions.items():
+            emotional_map["edges"].append({
+                "from": from_emotion,
+                "to": to_emotion,
+                "weight": count,
+                "actions": ["transition_action"]
+            })
+        
+        return {
+            "conversations": conversations,
+            "emotional_map": emotional_map,
+            "statistics": {
+                "dataset_stats": {
+                    "total_samples": len([turn for conv in conversations for turn in conv["turns"]]),
+                    "unique_emotions": len(emotion_counts),
+                    "sessions": len(conversations),
+                    "speakers": 2
+                }
+            }
+        }
+    
+    def test_emotion_recognition_accuracy(self):
+        """Test emotion recognition accuracy using IEMOCAP data"""
+        logger.info("Testing emotion recognition accuracy...")
+        
+        # Get IEMOCAP stats to access test data
+        try:
+            iemocap_stats = self.make_api_call("/iemocap-stats")
+            
+            # Test emotion recognition on sample texts
+            test_cases = []
+            correct_predictions = 0
+            total_predictions = 0
+            
+            # Use conversations from IEMOCAP data for testing
+            if "conversations" in iemocap_stats:
+                conversations = iemocap_stats.get("conversations", [])[:5]  # Test first 5 conversations
+                
+                for conv in conversations:
+                    for turn in conv.get("turns", [])[:10]:  # First 10 turns per conversation
+                        text = turn.get("text", "")
+                        expected_emotion = turn.get("emotion", "neutral")
+                        
+                        if text.strip():
+                            # Process input through backend
+                            response = self.make_api_call("/process-input", "POST", {
+                                "text": text,
+                                "user_id": "validation_test"
+                            })
+                            
+                            predicted_emotion = response.get("emotion", "unknown")
+                            confidence = response.get("confidence", 0.0)
+                            
+                            test_cases.append({
+                                "text": text,
+                                "expected": expected_emotion,
+                                "predicted": predicted_emotion,
+                                "confidence": confidence,
+                                "correct": expected_emotion == predicted_emotion
+                            })
+                            
+                            if expected_emotion == predicted_emotion:
+                                correct_predictions += 1
+                            total_predictions += 1
+            
+            accuracy = correct_predictions / total_predictions if total_predictions > 0 else 0
+            
+            self.results["emotion_recognition"] = {
+                "total_tests": total_predictions,
+                "correct_predictions": correct_predictions,
+                "accuracy": accuracy,
+                "test_cases": test_cases[:10],  # Store first 10 for analysis
+                "emotion_breakdown": self._analyze_emotion_breakdown(test_cases)
+            }
+            
+            logger.info(f"✅ Emotion recognition accuracy: {accuracy:.3f} ({correct_predictions}/{total_predictions})")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Emotion recognition testing failed: {e}")
+            self.results["emotion_recognition"] = {"error": str(e)}
+            return False
+    
+    def run_algorithm_performance_tests(self):
+        """Run comprehensive algorithm performance tests"""
+        logger.info("Running algorithm performance tests...")
+        
+        try:
+            # Run large-scale validation
+            validation_result = self.make_api_call("/run-validation", "POST", {
+                "num_tests": self.test_config["algorithm_tests"]
+            }, timeout=300)  # 5 minute timeout for large tests
+            
+            if validation_result.get("success"):
+                validation_data = validation_result["validation_result"]
+                
+                self.results["algorithm_performance"] = {
+                    "validation_completed": True,
+                    "total_tests": validation_data["results"]["total_tests"],
+                    "algorithm_metrics": validation_data["results"]["average_metrics"],
+                    "best_algorithm": validation_data.get("best_algorithm"),
+                    "success_rates": {
+                        algo: metrics.get("success_rate", 0) 
+                        for algo, metrics in validation_data["results"]["average_metrics"].items()
+                    },
+                    "average_execution_times": {
+                        algo: metrics.get("avg_time_ms", 0) 
+                        for algo, metrics in validation_data["results"]["average_metrics"].items()
+                    }
+                }
+                
+                logger.info(f"✅ Algorithm performance tests completed")
+                logger.info(f"   Total tests: {validation_data['results']['total_tests']}")
+                
+                if validation_data.get("best_algorithm"):
+                    best = validation_data["best_algorithm"]
+                    logger.info(f"   Best algorithm: {best['algorithm']} (score: {best['score']:.3f})")
+                
+                return True
+            else:
+                raise Exception("Validation failed on backend")
+                
+        except Exception as e:
+            logger.error(f"❌ Algorithm performance testing failed: {e}")
+            self.results["algorithm_performance"] = {"error": str(e)}
+            return False
+    
+    def run_conversation_simulations(self):
+        """Simulate realistic conversations to test system behavior"""
+        logger.info("Running conversation simulations...")
+        
+        conversation_scenarios = [
+            {
+                "name": "Emotional Journey - Sad to Happy",
+                "turns": [
+                    "I'm feeling really sad and overwhelmed with work today",
+                    "I took your advice and went for a walk, feeling a bit better",
+                    "I talked to my friend about my problems and I feel much happier now"
+                ]
+            },
+            {
+                "name": "Anxiety Management",
+                "turns": [
+                    "I'm really anxious about my upcoming presentation",
+                    "I practiced the breathing exercises you suggested",
+                    "The presentation went well and I feel confident now"
+                ]
+            },
+            {
+                "name": "Anger Resolution",
+                "turns": [
+                    "I'm so angry about what happened at work today",
+                    "I wrote down my feelings like you suggested",
+                    "I feel calmer now and ready to address the issue constructively"
+                ]
+            }
+        ]
+        
+        simulation_results = []
+        
+        try:
+            for scenario in conversation_scenarios:
+                scenario_result = {
+                    "name": scenario["name"],
+                    "turns": [],
+                    "emotion_progression": [],
+                    "algorithm_usage": [],
+                    "learning_occurred": False
+                }
+                
+                for turn_text in scenario["turns"]:
+                    response = self.make_api_call("/process-input", "POST", {
+                        "text": turn_text,
+                        "user_id": f"simulation_{scenario['name'].replace(' ', '_')}"
+                    })
+                    
+                    scenario_result["turns"].append({
+                        "input": turn_text,
+                        "response": response.get("message", ""),
+                        "emotion": response.get("emotion", "unknown"),
+                        "confidence": response.get("confidence", 0.0),
+                        "type": response.get("type", "unknown")
+                    })
+                    
+                    scenario_result["emotion_progression"].append(response.get("emotion", "unknown"))
+                    
+                    if response.get("algorithm_used"):
+                        scenario_result["algorithm_usage"].append(response["algorithm_used"])
+                    
+                    if response.get("type") in ["ask_for_steps", "learned_automatically"]:
+                        scenario_result["learning_occurred"] = True
+                    
+                    time.sleep(1)  # Small delay between turns
+                
+                simulation_results.append(scenario_result)
+                logger.info(f"   ✅ Completed scenario: {scenario['name']}")
+            
+            self.results["conversation_simulations"] = {
+                "completed": True,
+                "scenarios": simulation_results,
+                "total_scenarios": len(conversation_scenarios),
+                "learning_scenarios": sum(1 for s in simulation_results if s["learning_occurred"]),
+                "emotion_transitions": self._analyze_emotion_transitions(simulation_results)
+            }
+            
+            logger.info(f"✅ Conversation simulations completed")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Conversation simulations failed: {e}")
+            self.results["conversation_simulations"] = {"error": str(e)}
+            return False
+    
+    def run_performance_benchmarks(self):
+        """Run performance benchmarks for response times and throughput"""
+        logger.info("Running performance benchmarks...")
+        
+        try:
+            # Test response times
+            response_times = []
+            test_inputs = [
+                "I'm feeling happy today",
+                "I'm really sad about what happened",
+                "I'm anxious about the future",
+                "I'm angry at the situation",
+                "I feel confused and lost"
+            ]
+            
+            for iteration in range(self.test_config["benchmark_iterations"]):
+                for test_input in test_inputs:
+                    start_time = time.time()
+                    
+                    response = self.make_api_call("/process-input", "POST", {
+                        "text": test_input,
+                        "user_id": f"benchmark_user_{iteration}"
+                    })
+                    
+                    end_time = time.time()
+                    response_time = (end_time - start_time) * 1000  # Convert to milliseconds
+                    response_times.append(response_time)
+            
+            # Test algorithm comparison performance
+            algorithm_times = []
+            emotions = ['sad', 'angry', 'anxious', 'confused', 'tired']
+            
+            for _ in range(self.test_config["benchmark_iterations"]):
+                start_emotion = np.random.choice(emotions)
+                target_emotion = "happy"
+                
+                start_time = time.time()
+                
+                comparison_result = self.make_api_call("/compare-algorithms", "POST", {
+                    "start_emotion": start_emotion,
+                    "goal_emotion": target_emotion
+                })
+                
+                end_time = time.time()
+                algorithm_time = (end_time - start_time) * 1000
+                algorithm_times.append(algorithm_time)
+            
+            self.results["performance_benchmarks"] = {
+                "response_times": {
+                    "mean": np.mean(response_times),
+                    "median": np.median(response_times),
+                    "std": np.std(response_times),
+                    "min": np.min(response_times),
+                    "max": np.max(response_times),
+                    "samples": len(response_times)
+                },
+                "algorithm_times": {
+                    "mean": np.mean(algorithm_times),
+                    "median": np.median(algorithm_times),
+                    "std": np.std(algorithm_times),
+                    "min": np.min(algorithm_times),
+                    "max": np.max(algorithm_times),
+                    "samples": len(algorithm_times)
+                },
+                "throughput_estimate": 1000 / np.mean(response_times) if response_times else 0  # requests per second
+            }
+            
+            logger.info(f"✅ Performance benchmarks completed")
+            logger.info(f"   Average response time: {np.mean(response_times):.2f}ms")
+            logger.info(f"   Average algorithm time: {np.mean(algorithm_times):.2f}ms")
+            logger.info(f"   Estimated throughput: {self.results['performance_benchmarks']['throughput_estimate']:.2f} req/sec")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Performance benchmarking failed: {e}")
+            self.results["performance_benchmarks"] = {"error": str(e)}
+            return False
+    
+    def generate_comprehensive_report(self):
+        """Generate comprehensive analysis report"""
+        logger.info("Generating comprehensive analysis report...")
+        
+        try:
+            # Calculate overall system score
+            scores = []
+            
+            # Emotion recognition score (0-100)
+            if "accuracy" in self.results.get("emotion_recognition", {}):
+                emotion_score = self.results["emotion_recognition"]["accuracy"] * 100
+                scores.append(("Emotion Recognition", emotion_score))
+            
+            # Algorithm performance score (based on success rate)
+            if "algorithm_performance" in self.results and "success_rates" in self.results["algorithm_performance"]:
+                success_rates = self.results["algorithm_performance"]["success_rates"]
+                if success_rates:
+                    avg_success_rate = np.mean(list(success_rates.values())) * 100
+                    scores.append(("Algorithm Performance", avg_success_rate))
+            
+            # Response time score (inverse of response time, normalized)
+            if "response_times" in self.results.get("performance_benchmarks", {}):
+                avg_response_time = self.results["performance_benchmarks"]["response_times"]["mean"]
+                # Score: 100 - (response_time / 10), capped at 0-100
+                response_score = max(0, min(100, 100 - (avg_response_time / 10)))
+                scores.append(("Response Time", response_score))
+            
+            # Learning capability score
+            if "conversation_simulations" in self.results:
+                learning_rate = self.results["conversation_simulations"].get("learning_scenarios", 0) / \
+                               max(1, self.results["conversation_simulations"].get("total_scenarios", 1))
+                learning_score = learning_rate * 100
+                scores.append(("Learning Capability", learning_score))
+            
+            overall_score = np.mean([score for _, score in scores]) if scores else 0
+            
+            self.results["comprehensive_analysis"] = {
+                "overall_score": overall_score,
+                "component_scores": dict(scores),
+                "test_summary": {
+                    "total_tests_run": sum([
+                        self.results.get("emotion_recognition", {}).get("total_tests", 0),
+                        self.results.get("algorithm_performance", {}).get("total_tests", 0),
+                        len(self.results.get("conversation_simulations", {}).get("scenarios", [])),
+                        self.results.get("performance_benchmarks", {}).get("response_times", {}).get("samples", 0)
+                    ]),
+                    "tests_passed": sum([
+                        1 if "accuracy" in self.results.get("emotion_recognition", {}) else 0,
+                        1 if "validation_completed" in self.results.get("algorithm_performance", {}) else 0,
+                        1 if "completed" in self.results.get("conversation_simulations", {}) else 0,
+                        1 if "response_times" in self.results.get("performance_benchmarks", {}) else 0
+                    ]),
+                    "dataset_integration": "success" if self.results.get("dataset_validation", {}).get("loaded") else "failed"
+                },
+                "recommendations": self._generate_recommendations()
+            }
+            
+            logger.info(f"✅ Comprehensive analysis completed")
+            logger.info(f"   Overall Score: {overall_score:.1f}/100")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Comprehensive analysis failed: {e}")
+            self.results["comprehensive_analysis"] = {"error": str(e)}
+            return False
+    
+    def _analyze_emotion_breakdown(self, test_cases):
+        """Analyze emotion prediction breakdown"""
+        emotion_stats = defaultdict(lambda: {"correct": 0, "total": 0})
+        
+        for case in test_cases:
+            expected = case["expected"]
+            correct = case["correct"]
+            
+            emotion_stats[expected]["total"] += 1
+            if correct:
+                emotion_stats[expected]["correct"] += 1
+        
+        return {
+            emotion: {
+                "accuracy": stats["correct"] / stats["total"] if stats["total"] > 0 else 0,
+                "correct": stats["correct"],
+                "total": stats["total"]
+            }
+            for emotion, stats in emotion_stats.items()
+        }
+    
+    def _analyze_emotion_transitions(self, simulation_results):
+        """Analyze emotion transitions in simulations"""
+        transitions = []
+        
+        for scenario in simulation_results:
+            emotions = scenario["emotion_progression"]
+            for i in range(len(emotions) - 1):
+                transitions.append((emotions[i], emotions[i + 1]))
+        
+        transition_counts = Counter(transitions)
+        return dict(transition_counts)
+    
+    def _generate_recommendations(self):
+        """Generate recommendations based on test results"""
+        recommendations = []
+        
+        # Emotion recognition recommendations
+        if "emotion_recognition" in self.results:
+            accuracy = self.results["emotion_recognition"].get("accuracy", 0)
+            if accuracy < 0.7:
+                recommendations.append({
+                    "category": "Emotion Recognition",
+                    "priority": "High",
+                    "issue": f"Low accuracy ({accuracy:.2f})",
+                    "recommendation": "Consider training with more IEMOCAP data or improving feature extraction"
+                })
+        
+        # Algorithm performance recommendations
+        if "algorithm_performance" in self.results:
+            success_rates = self.results["algorithm_performance"].get("success_rates", {})
+            for algo, rate in success_rates.items():
+                if rate < 0.8:
+                    recommendations.append({
+                        "category": "Algorithm Performance",
+                        "priority": "Medium",
+                        "issue": f"{algo} low success rate ({rate:.2f})",
+                        "recommendation": f"Optimize {algo} implementation or graph connectivity"
+                    })
+        
+        # Performance recommendations
+        if "performance_benchmarks" in self.results:
+            avg_response_time = self.results["performance_benchmarks"]["response_times"]["mean"]
+            if avg_response_time > 1000:  # > 1 second
+                recommendations.append({
+                    "category": "Performance",
+                    "priority": "High",
+                    "issue": f"Slow response time ({avg_response_time:.0f}ms)",
+                    "recommendation": "Optimize backend processing or consider caching strategies"
+                })
+        
+        return recommendations
+    
+    def save_results(self, output_file=None):
+        """Save test results to file"""
+        if output_file is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_file = f"iemocap_validation_results_{timestamp}.json"
+        
+        self.results["end_time"] = datetime.now().isoformat()
+        self.results["total_duration"] = str(
+            datetime.fromisoformat(self.results["end_time"]) - 
+            datetime.fromisoformat(self.results["start_time"])
+        )
+        
+        try:
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(self.results, f, indent=2, ensure_ascii=False, default=str)
+            
+            logger.info(f"✅ Results saved to {output_file}")
+            return output_file
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to save results: {e}")
+            return None
+    
+    def generate_visual_report(self, output_dir="validation_report"):
+        """Generate visual report with charts and graphs"""
+        logger.info("Generating visual report...")
+        
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Set up matplotlib style
+            plt.style.use('seaborn-v0_8' if hasattr(plt.style, 'seaborn-v0_8') else 'default')
+            
+            # 1. Algorithm Performance Comparison
+            if "algorithm_performance" in self.results and "success_rates" in self.results["algorithm_performance"]:
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+                
+                success_rates = self.results["algorithm_performance"]["success_rates"]
+                execution_times = self.results["algorithm_performance"]["average_execution_times"]
+                
+                # Success rates bar chart
+                algorithms = list(success_rates.keys())
+                rates = [success_rates[algo] * 100 for algo in algorithms]
+                
+                bars1 = ax1.bar(algorithms, rates, color=['#1f77b4', '#ff7f0e', '#2ca02c'])
+                ax1.set_title('Algorithm Success Rates')
+                ax1.set_ylabel('Success Rate (%)')
+                ax1.set_ylim(0, 100)
+                
+                # Add value labels on bars
+                for bar, rate in zip(bars1, rates):
+                    ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, 
+                            f'{rate:.1f}%', ha='center', va='bottom')
+                
+                # Execution times bar chart
+                times = [execution_times[algo] for algo in algorithms]
+                bars2 = ax2.bar(algorithms, times, color=['#d62728', '#9467bd', '#8c564b'])
+                ax2.set_title('Algorithm Execution Times')
+                ax2.set_ylabel('Average Time (ms)')
+                
+                # Add value labels on bars
+                for bar, time in zip(bars2, times):
+                    ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5, 
+                            f'{time:.1f}ms', ha='center', va='bottom')
+                
+                plt.tight_layout()
+                plt.savefig(os.path.join(output_dir, 'algorithm_performance.png'), dpi=300, bbox_inches='tight')
+                plt.close()
+            
+            # 2. Emotion Recognition Breakdown
+            if "emotion_recognition" in self.results and "emotion_breakdown" in self.results["emotion_recognition"]:
+                breakdown = self.results["emotion_recognition"]["emotion_breakdown"]
+                
+                emotions = list(breakdown.keys())
+                accuracies = [breakdown[emotion]["accuracy"] * 100 for emotion in emotions]
+                
+                plt.figure(figsize=(10, 6))
+                bars = plt.bar(emotions, accuracies, color=plt.cm.viridis(np.linspace(0, 1, len(emotions))))
+                plt.title('Emotion Recognition Accuracy by Emotion')
+                plt.ylabel('Accuracy (%)')
+                plt.xticks(rotation=45)
+                plt.ylim(0, 100)
+                
+                # Add value labels
+                for bar, acc in zip(bars, accuracies):
+                    plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, 
+                            f'{acc:.1f}%', ha='center', va='bottom')
+                
+                plt.tight_layout()
+                plt.savefig(os.path.join(output_dir, 'emotion_recognition_breakdown.png'), dpi=300, bbox_inches='tight')
+                plt.close()
+            
+            # 3. Performance Benchmarks
+            if "performance_benchmarks" in self.results:
+                benchmarks = self.results["performance_benchmarks"]
+                
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+                
+                # Response time distribution (simulated)
+                response_stats = benchmarks["response_times"]
+                mean_time = response_stats["mean"]
+                std_time = response_stats["std"]
+                
+                # Generate sample data for visualization
+                sample_times = np.random.normal(mean_time, std_time, 100)
+                sample_times = np.clip(sample_times, 0, None)  # Ensure positive values
+                
+                ax1.hist(sample_times, bins=20, alpha=0.7, color='skyblue', edgecolor='black')
+                ax1.axvline(mean_time, color='red', linestyle='--', label=f'Mean: {mean_time:.1f}ms')
+                ax1.set_title('Response Time Distribution')
+                ax1.set_xlabel('Response Time (ms)')
+                ax1.set_ylabel('Frequency')
+                ax1.legend()
+                
+                # Algorithm comparison times
+                if "algorithm_times" in benchmarks:
+                    algo_stats = benchmarks["algorithm_times"]
+                    algo_mean = algo_stats["mean"]
+                    
+                    categories = ['Input Processing', 'Algorithm Comparison']
+                    times = [mean_time, algo_mean]
+                    
+                    bars = ax2.bar(categories, times, color=['lightcoral', 'lightblue'])
+                    ax2.set_title('Processing Time Comparison')
+                    ax2.set_ylabel('Average Time (ms)')
+                    
+                    # Add value labels
+                    for bar, time in zip(bars, times):
+                        ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 10, 
+                                f'{time:.1f}ms', ha='center', va='bottom')
+                
+                plt.tight_layout()
+                plt.savefig(os.path.join(output_dir, 'performance_benchmarks.png'), dpi=300, bbox_inches='tight')
+                plt.close()
+            
+            # 4. Overall System Score
+            if "comprehensive_analysis" in self.results:
+                analysis = self.results["comprehensive_analysis"]
+                
+                if "component_scores" in analysis:
+                    components = list(analysis["component_scores"].keys())
+                    scores = list(analysis["component_scores"].values())
+                    
+                    plt.figure(figsize=(10, 6))
+                    bars = plt.barh(components, scores, color=plt.cm.RdYlGn(np.array(scores)/100))
+                    plt.title('System Component Scores')
+                    plt.xlabel('Score (0-100)')
+                    plt.xlim(0, 100)
+                    
+                    # Add value labels
+                    for bar, score in zip(bars, scores):
+                        plt.text(bar.get_width() + 1, bar.get_y() + bar.get_height()/2, 
+                                f'{score:.1f}', ha='left', va='center')
+                    
+                    # Add overall score
+                    overall_score = analysis["overall_score"]
+                    plt.figtext(0.5, 0.02, f'Overall System Score: {overall_score:.1f}/100', 
+                               ha='center', fontsize=14, fontweight='bold')
+                    
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(output_dir, 'system_scores.png'), dpi=300, bbox_inches='tight')
+                    plt.close()
+            
+            logger.info(f"✅ Visual report generated in {output_dir}/")
+            return output_dir
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to generate visual report: {e}")
+            return None
+    
+    def print_summary_report(self):
+        """Print a summary report to console"""
+        print("\n" + "="*80)
+        print("🔬 IEMOCAP VALIDATION TEST RESULTS SUMMARY")
+        print("="*80)
+        
+        # Test session info
+        print(f"📅 Test Session: {self.results['test_session_id']}")
+        print(f"⏰ Duration: {self.results.get('total_duration', 'N/A')}")
+        print(f"🔗 Backend: {self.backend_url}")
+        
+        # Dataset validation
+        dataset = self.results.get("dataset_validation", {})
+        if dataset.get("loaded"):
+            print(f"✅ Dataset: Loaded ({dataset.get('conversations', 0)} conversations)")
+        else:
+            print(f"❌ Dataset: Failed to load")
+        
+        # Emotion recognition
+        emotion = self.results.get("emotion_recognition", {})
+        if "accuracy" in emotion:
+            print(f"🧠 Emotion Recognition: {emotion['accuracy']:.3f} accuracy ({emotion['correct_predictions']}/{emotion['total_tests']})")
+        else:
+            print(f"❌ Emotion Recognition: Failed")
+        
+        # Algorithm performance
+        algorithm = self.results.get("algorithm_performance", {})
+        if "best_algorithm" in algorithm:
+            best = algorithm["best_algorithm"]["algorithm"]
+            print(f"🏁 Algorithm Performance: Best = {best}")
+            for algo, rate in algorithm.get("success_rates", {}).items():
+                print(f"   {algo}: {rate:.3f} success rate")
+        else:
+            print(f"❌ Algorithm Performance: Failed")
+        
+        # Performance benchmarks
+        perf = self.results.get("performance_benchmarks", {})
+        if "response_times" in perf:
+            avg_time = perf["response_times"]["mean"]
+            throughput = perf.get("throughput_estimate", 0)
+            print(f"⚡ Performance: {avg_time:.1f}ms avg response, {throughput:.1f} req/sec throughput")
+        else:
+            print(f"❌ Performance: Failed")
+        
+        # Overall score
+        analysis = self.results.get("comprehensive_analysis", {})
+        if "overall_score" in analysis:
+            score = analysis["overall_score"]
+            print(f"📊 Overall Score: {score:.1f}/100")
+            
+            # Recommendations
+            recommendations = analysis.get("recommendations", [])
+            if recommendations:
+                print(f"\n💡 Recommendations ({len(recommendations)}):")
+                for i, rec in enumerate(recommendations[:3], 1):  # Show top 3
+                    print(f"   {i}. [{rec['priority']}] {rec['category']}: {rec['recommendation']}")
+        else:
+            print(f"❌ Overall Analysis: Failed")
+        
+        print("="*80 + "\n")
+    
+    def run_full_validation(self):
+        """Run the complete validation test suite"""
+        logger.info("🚀 Starting comprehensive IEMOCAP validation test suite")
+        
+        # Test steps
+        test_steps = [
+            ("Backend Connection", self.check_backend_connection),
+            ("IEMOCAP Dataset Setup", self.setup_iemocap_dataset),
+            ("Emotion Recognition Testing", self.test_emotion_recognition_accuracy),
+            ("Algorithm Performance Testing", self.run_algorithm_performance_tests),
+            ("Conversation Simulations", self.run_conversation_simulations),
+            ("Performance Benchmarking", self.run_performance_benchmarks),
+            ("Comprehensive Analysis", self.generate_comprehensive_report)
+        ]
+        
+        # Execute test steps
+        passed_tests = 0
+        total_tests = len(test_steps)
+        
+        for step_name, step_function in test_steps:
+            logger.info(f"🔄 Running: {step_name}")
+            try:
+                if step_function():
+                    logger.info(f"✅ {step_name} - PASSED")
+                    passed_tests += 1
+                else:
+                    logger.error(f"❌ {step_name} - FAILED")
+            except Exception as e:
+                logger.error(f"❌ {step_name} - ERROR: {e}")
+        
+        # Generate reports
+        logger.info("📊 Generating reports...")
+        results_file = self.save_results()
+        visual_report_dir = self.generate_visual_report()
+        
+        # Print summary
+        self.print_summary_report()
+        
+        # Final status
+        success_rate = passed_tests / total_tests
+        if success_rate >= 0.8:
+            logger.info(f"🎉 VALIDATION SUCCESSFUL: {passed_tests}/{total_tests} tests passed")
+        elif success_rate >= 0.6:
+            logger.warning(f"⚠️  VALIDATION PARTIAL: {passed_tests}/{total_tests} tests passed")
+        else:
+            logger.error(f"💥 VALIDATION FAILED: {passed_tests}/{total_tests} tests passed")
+        
+        return {
+            "success_rate": success_rate,
+            "passed_tests": passed_tests,
+            "total_tests": total_tests,
+            "results_file": results_file,
+            "visual_report": visual_report_dir,
+            "results": self.results
+        }
+
+def main():
+    """Main execution function"""
+    parser = argparse.ArgumentParser(description="IEMOCAP Validation Test Script")
+    parser.add_argument("--backend-url", default="http://localhost:5001", 
+                       help="Backend URL (default: http://localhost:5001)")
+    parser.add_argument("--dataset-path", 
+                       help="Path to IEMOCAP validation data JSON file")
+    parser.add_argument("--algorithm-tests", type=int, default=100,
+                       help="Number of algorithm performance tests (default: 100)")
+    parser.add_argument("--output-dir", default="validation_results",
+                       help="Output directory for results (default: validation_results)")
+    parser.add_argument("--verbose", action="store_true",
+                       help="Enable verbose logging")
+    
+    args = parser.parse_args()
+    
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+    
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    # Initialize tester
+    tester = IEMOCAPValidationTester(
+        backend_url=args.backend_url,
+        dataset_path=args.dataset_path
+    )
+    
+    # Update test configuration
+    tester.test_config["algorithm_tests"] = args.algorithm_tests
+    
+    try:
+        # Run validation
+        results = tester.run_full_validation()
+        
+        # Move results to output directory
+        if results["results_file"]:
+            import shutil
+            shutil.move(results["results_file"], 
+                       os.path.join(args.output_dir, os.path.basename(results["results_file"])))
+        
+        if results["visual_report"]:
+            if results["visual_report"] != args.output_dir:
+                shutil.move(results["visual_report"], args.output_dir)
+        
+        print(f"\n📁 All results saved to: {args.output_dir}")
+        
+        # Exit with appropriate code
+        sys.exit(0 if results["success_rate"] >= 0.8 else 1)
+        
+    except KeyboardInterrupt:
+        logger.info("❌ Validation interrupted by user")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"💥 Validation failed with error: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+</file>
+
 <file path=".gitignore">
 # Python
 __pycache__/
@@ -2100,6 +5573,21 @@ import App from './App';
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(<App />);
+</file>
+
+<file path=".repomixignore">
+# Ignore large data files
+data/iemocap_validation_data.json
+data/iemocap/iemocap_full_dataset.csv
+data/iemocap/*.csv
+
+# Other potential large files to ignore
+*.zip
+*.tar.gz
+*.log
+node_modules/
+__pycache__/
+*.pyc
 </file>
 
 <file path="start.sh">

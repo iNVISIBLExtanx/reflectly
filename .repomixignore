@@ -1,0 +1,12 @@
+# Ignore large data files
+data/iemocap_validation_data.json
+data/iemocap/iemocap_full_dataset.csv
+data/iemocap/*.csv
+
+# Other potential large files to ignore
+*.zip
+*.tar.gz
+*.log
+node_modules/
+__pycache__/
+*.pyc
