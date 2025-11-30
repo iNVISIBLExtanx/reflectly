@@ -11,20 +11,28 @@ const IntelligentAgentApp = () => {
   const [currentExperienceId, setCurrentExperienceId] = useState('');
   const [stepsInput, setStepsInput] = useState(['']);
   const [backendStatus, setBackendStatus] = useState('checking');
-  const [activeTab, setActiveTab] = useState('conversation'); // New state for tabs
+  const [backendUrl, setBackendUrl] = useState('');
+  const [activeTab, setActiveTab] = useState('conversation');
 
-  // Try proxy first, fallback to direct API
-  const API_BASE = process.env.NODE_ENV === 'development' ? 'http://localhost:5000/api' : '/api';
+  // Get backend URL from environment variable or use default
+  const getBackendBaseUrl = () => {
+    // Priority 1: Environment variable (for Colab backend)
+    if (process.env.REACT_APP_BACKEND_URL) {
+      return process.env.REACT_APP_BACKEND_URL;
+    }
+    // Priority 2: Local development
+    return 'http://localhost:5000';
+  };
 
   // Emotion colors for map visualization
   const emotionColors = {
-    happy: '#4CAF50',      // Green
-    sad: '#2196F3',        // Blue  
-    anxious: '#FF9800',    // Orange
-    angry: '#F44336',      // Red
-    confused: '#9C27B0',   // Purple
-    tired: '#607D8B',      // Blue Grey
-    neutral: '#9E9E9E'     // Grey
+    happy: '#4CAF50',
+    sad: '#2196F3',
+    anxious: '#FF9800',
+    angry: '#F44336',
+    confused: '#9C27B0',
+    tired: '#607D8B',
+    neutral: '#9E9E9E'
   };
 
   useEffect(() => {
@@ -33,138 +41,84 @@ const IntelligentAgentApp = () => {
 
   const checkBackendStatus = async () => {
     try {
-      // Try to get the backend port from the window object
-      // This would be set by the backend as a global variable
-      const configuredPort = window.BACKEND_PORT || process.env.REACT_APP_BACKEND_PORT;
+      const baseUrl = getBackendBaseUrl();
+      console.log(`🔍 Attempting to connect to backend: ${baseUrl}`);
       
-      // Default ports to try if not configured
-      const defaultPorts = [5000, 5001];
-      const portsToTry = configuredPort ? [configuredPort, ...defaultPorts] : defaultPorts;
-      
-      let response;
-      let apiBase;
-      
-      // Try direct connections
-      for (const port of portsToTry) {
-        try {
-          console.log(`Trying to connect to backend on port ${port}...`);
-          response = await fetch(`http://localhost:${port}/api/health`);
-          if (response.ok) {
-            apiBase = `http://localhost:${port}/api`;
-            console.log(`✅ Connected to backend on port ${port}`);
-            // Save the working port for future reference
-            window.BACKEND_PORT = port;
-            break;
-          }
-        } catch (err) {
-          console.log(`Backend not available on port ${port}`);
-        }
-      }
-      
-      // If direct connections fail, try proxy
-      if (!response || !response.ok) {
-        try {
-          console.log('Trying proxy connection...');
-          response = await fetch('/api/health');
-          if (response.ok) {
-            apiBase = '/api';
-            console.log('✅ Connected to backend via proxy');
-          }
-        } catch (err) {
-          console.log('Proxy connection failed');
-        }
-      }
-      
+      const response = await fetch(`${baseUrl}/api/health`, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+        },
+      });
+
       if (response.ok) {
         const data = await response.json();
         setBackendStatus('connected');
+        setBackendUrl(baseUrl);
         console.log('✅ Backend connected:', data);
+        console.log(`📍 Using backend URL: ${baseUrl}`);
         
         // Load initial data
-        await loadMemoryMap(apiBase);
-        await loadMemoryStats(apiBase);
+        await loadMemoryMap();
+        await loadMemoryStats();
       } else {
-        setBackendStatus('error');
+        throw new Error(`Backend returned status ${response.status}`);
       }
     } catch (error) {
       console.error('❌ Backend connection failed:', error);
       setBackendStatus('error');
+      
+      // Show helpful error message
+      const baseUrl = getBackendBaseUrl();
+      console.log(`❌ Could not connect to: ${baseUrl}`);
+      console.log('💡 Tips:');
+      console.log('   - Check if backend is running');
+      console.log('   - Verify REACT_APP_BACKEND_URL in .env file');
+      console.log('   - Make sure the URL is correct');
     }
   };
 
   const makeApiCall = async (endpoint, options = {}) => {
-    // Use the discovered port from checkBackendStatus if available
-    const urls = [];
+    const baseUrl = backendUrl || getBackendBaseUrl();
+    const url = `${baseUrl}/api${endpoint}`;
     
-    // If we already found a working port, try it first
-    if (window.BACKEND_PORT) {
-      urls.push(`http://localhost:${window.BACKEND_PORT}/api${endpoint}`);
-    } else {
-      // Otherwise try common ports
-      urls.push(`http://localhost:5001/api${endpoint}`); // Try port 5001 first as it's our default
-      urls.push(`http://localhost:5000/api${endpoint}`);
-    }
-    
-    // Always try proxy as fallback
-    urls.push(`/api${endpoint}`);
-    
-    let lastError = null;
-    
-    for (const url of urls) {
-      try {
-        console.log(`Trying API call to ${url}...`);
-        const response = await fetch(url, {
-          ...options,
-          headers: {
-            'Content-Type': 'application/json',
-            ...options.headers
-          }
-        });
-        
-        if (response.ok) {
-          // If we successfully made a call, remember this port for future calls
-          const match = url.match(/http:\/\/localhost:(\d+)/);
-          if (match && match[1]) {
-            window.BACKEND_PORT = match[1];
-            console.log(`Successfully connected to backend on port ${match[1]}`);
-          }
-          return response;
-        } else {
-          lastError = `Backend returned status ${response.status}`;
-          console.log(`Failed API call to ${url}: ${lastError}`);
-        }
-      } catch (error) {
-        lastError = error.message;
-        console.log(`Failed to connect to ${url}:`, error.message);
+    try {
+      console.log(`📡 API Call: ${url}`);
+      const response = await fetch(url, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          ...options.headers
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
+
+      return response;
+    } catch (error) {
+      console.error(`❌ API call failed: ${url}`, error);
+      throw new Error(`Could not connect to backend at ${baseUrl}. ${error.message}`);
     }
-    
-    const portMessage = window.BACKEND_PORT ? 
-      `port ${window.BACKEND_PORT}` : 
-      'ports 5001 or 5000';
-    
-    throw new Error(`Could not connect to backend. Make sure the backend is running on ${portMessage}.`);
   };
 
-  const loadMemoryMap = async (apiBase = API_BASE) => {
+  const loadMemoryMap = async () => {
     try {
       const response = await makeApiCall('/memory-map');
-      if (response.ok) {
-        const data = await response.json();
-        setMemoryMap(data);
-      }
+      const data = await response.json();
+      setMemoryMap(data);
     } catch (error) {
       console.error('Error loading memory map:', error);
     }
   };
 
-  const loadMemoryStats = async (apiBase = API_BASE) => {
+  const loadMemoryStats = async () => {
     try {
       const response = await makeApiCall('/memory-stats');
-      if (response.ok) {
-        const data = await response.json();
-        setMemoryStats(data);
-      }
+      const data = await response.json();
+      setMemoryStats(data);
     } catch (error) {
       console.error('Error loading memory stats:', error);
     }
@@ -185,7 +139,6 @@ const IntelligentAgentApp = () => {
 
       const agentResponse = await response.json();
       
-      // Add user input and agent response to conversation
       setConversation(prev => [
         ...prev,
         {
@@ -200,24 +153,20 @@ const IntelligentAgentApp = () => {
         }
       ]);
 
-      // Clear input
       setInputText('');
 
-      // If agent asks for steps, show steps form
       if (agentResponse.type === 'ask_for_steps') {
         setShowingStepsForm(true);
         setCurrentExperienceId(agentResponse.experience_id);
         setStepsInput(['']);
       }
       
-      // Reload memory map and stats after successful input processing
       await loadMemoryMap();
       await loadMemoryStats();
       
     } catch (error) {
       console.error('❌ Error processing input:', error);
       
-      // Add error message to conversation
       setConversation(prev => [
         ...prev,
         {
@@ -250,30 +199,23 @@ const IntelligentAgentApp = () => {
         })
       });
 
-      if (response.ok) {
-        const result = await response.json();
-        
-        // Add confirmation to conversation
-        setConversation(prev => [
-          ...prev,
-          {
-            type: 'agent',
-            message: result.message,
-            timestamp: new Date().toLocaleTimeString()
-          }
-        ]);
+      const result = await response.json();
+      
+      setConversation(prev => [
+        ...prev,
+        {
+          type: 'agent',
+          message: result.message,
+          timestamp: new Date().toLocaleTimeString()
+        }
+      ]);
 
-        // Clear steps form
-        setShowingStepsForm(false);
-        setCurrentExperienceId('');
-        setStepsInput(['']);
+      setShowingStepsForm(false);
+      setCurrentExperienceId('');
+      setStepsInput(['']);
 
-        // Reload memory map and stats
-        await loadMemoryMap();
-        await loadMemoryStats();
-      } else {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
+      await loadMemoryMap();
+      await loadMemoryStats();
     } catch (error) {
       console.error('Error saving steps:', error);
       alert(`Failed to save steps: ${error.message}`);
@@ -310,8 +252,6 @@ const IntelligentAgentApp = () => {
           setMemoryMap({ nodes: [], edges: [] });
           setMemoryStats({});
           alert('Memory map reset successfully!');
-        } else {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
       } catch (error) {
         console.error('Error resetting memory:', error);
@@ -323,8 +263,8 @@ const IntelligentAgentApp = () => {
   const renderBackendStatus = () => {
     const statusInfo = {
       checking: { color: '#ffc107', text: 'Checking backend...', icon: '🔍' },
-      connected: { color: '#28a745', text: 'Backend connected', icon: '✅' },
-      error: { color: '#dc3545', text: 'Backend not connected', icon: '❌' }
+      connected: { color: '#28a745', text: `Backend connected: ${backendUrl}`, icon: '✅' },
+      error: { color: '#dc3545', text: `Backend not connected`, icon: '❌' }
     };
 
     const status = statusInfo[backendStatus] || statusInfo.error;
@@ -343,7 +283,7 @@ const IntelligentAgentApp = () => {
         {status.icon} {status.text}
         {backendStatus === 'error' && (
           <div style={{fontSize: '12px', marginTop: '5px', fontWeight: 'normal'}}>
-            Make sure to run: ./start.sh or python backend/intelligent_agent.py
+            Check your .env file and make sure REACT_APP_BACKEND_URL is set correctly
           </div>
         )}
       </div>
@@ -403,13 +343,11 @@ const IntelligentAgentApp = () => {
       );
     }
 
-    // Simple circular layout
     const centerX = 250;
     const centerY = 200;
     const radius = 120;
     const nodePositions = {};
 
-    // Position nodes in a circle
     nodes.forEach((node, index) => {
       const angle = (index / nodes.length) * 2 * Math.PI;
       nodePositions[node.id] = {
@@ -421,7 +359,6 @@ const IntelligentAgentApp = () => {
     return (
       <div style={{ position: 'relative', width: '500px', height: '400px', border: '1px solid #ddd', borderRadius: '8px', background: '#f9f9f9' }}>
         <svg width="500" height="400">
-          {/* Render edges */}
           {edges.map((edge, index) => {
             const fromPos = nodePositions[edge.from];
             const toPos = nodePositions[edge.to];
@@ -451,7 +388,6 @@ const IntelligentAgentApp = () => {
             );
           })}
 
-          {/* Render nodes */}
           {nodes.map((node) => {
             const pos = nodePositions[node.id];
             const color = emotionColors[node.id] || '#999';
@@ -544,7 +480,7 @@ const IntelligentAgentApp = () => {
                   </div>
                 )}
                 {message.algorithm_used && (
-                  <div style={{ marginTop: '8px', fontSize: '12px', opacity: 0.8 }}>
+                  <div style={{ marginTop: '8px', fontSize: '12px', opacity: 0.8' }}>
                     🔍 Used: {message.algorithm_used} algorithm
                   </div>
                 )}
@@ -668,13 +604,11 @@ const IntelligentAgentApp = () => {
 
   const renderConversationTab = () => (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '30px' }}>
-      {/* Left Side - Conversation */}
       <div>
         <h2 style={{ color: '#333', marginBottom: '15px' }}>💬 Conversation</h2>
         
         {renderConversation()}
         
-        {/* Input Area */}
         <div style={{ display: 'flex', gap: '10px' }}>
           <input
             type="text"
@@ -708,7 +642,6 @@ const IntelligentAgentApp = () => {
           </button>
         </div>
 
-        {/* Example inputs */}
         <div style={{ marginTop: '15px', fontSize: '12px', color: '#666' }}>
           <strong>Try these examples:</strong>
           <div style={{ marginTop: '5px' }}>
@@ -723,13 +656,11 @@ const IntelligentAgentApp = () => {
         </div>
       </div>
 
-      {/* Right Side - Memory Map */}
       <div>
         <h2 style={{ color: '#333', marginBottom: '15px' }}>🗺️ Memory Map</h2>
         
         {renderMemoryMap()}
         
-        {/* Memory Stats */}
         <div style={{
           marginTop: '15px',
           padding: '15px',
@@ -746,7 +677,6 @@ const IntelligentAgentApp = () => {
           </div>
         </div>
 
-        {/* Legend */}
         <div style={{
           marginTop: '15px',
           padding: '10px',
@@ -762,7 +692,6 @@ const IntelligentAgentApp = () => {
           </div>
         </div>
 
-        {/* Reset Button */}
         <button
           onClick={resetMemory}
           disabled={backendStatus !== 'connected'}
@@ -801,7 +730,6 @@ const IntelligentAgentApp = () => {
         <AlgorithmComparisonUI makeApiCall={makeApiCall} />
       )}
 
-      {/* How it Works - only show on conversation tab */}
       {activeTab === 'conversation' && (
         <div style={{
           marginTop: '40px',
