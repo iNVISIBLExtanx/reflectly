@@ -480,7 +480,7 @@ const IntelligentAgentApp = () => {
                   </div>
                 )}
                 {message.algorithm_used && (
-                  <div style={{ marginTop: '8px', fontSize: '12px', opacity: 0.8' }}>
+                  <div style={{ marginTop: '8px', fontSize: '12px', opacity: '0.8' }}>
                     🔍 Used: {message.algorithm_used} algorithm
                   </div>
                 )}
