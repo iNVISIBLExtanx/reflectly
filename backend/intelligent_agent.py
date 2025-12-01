@@ -13,7 +13,25 @@ from collections import defaultdict, deque
 import uuid
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+
+# ENHANCED CORS Configuration for Colab Environment
+CORS(app, 
+     resources={r"/*": {
+         "origins": "*",
+         "methods": ["GET", "POST", "OPTIONS"],
+         "allow_headers": ["Content-Type", "Accept", "Authorization"],
+         "expose_headers": ["Content-Type"],
+         "supports_credentials": False
+     }})
+
+# Critical: Add CORS headers to ALL responses (required for Colab)
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization,Accept')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+    response.headers.add('Access-Control-Max-Age', '3600')
+    return response
 
 # In-memory storage for the evolving memory map
 memory_map = {
@@ -812,6 +830,7 @@ if __name__ == '__main__':
     print("🗺️  Memory Map: Learning + Real-time algorithm comparison")
     print("⚡ NEW: /api/compare-algorithms endpoint")
     print("📊 NEW: /api/algorithm-performance endpoint")
+    print("🌐 CORS: Enabled for Colab environment")
     # Get port from environment variable, defaulting to 5000
     import os
     port = int(os.environ.get('PORT', 5000))
