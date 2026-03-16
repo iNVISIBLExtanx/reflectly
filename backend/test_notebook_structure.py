@@ -70,9 +70,19 @@ class NotebookValidator:
         all_source = "\n".join(c["source"] for c in code_cells)
 
         # ----------------------------------------------------------
-        # TEST: Ollama install URL uses ollama.com (not ollama.ai)
+        # TEST: zstd dependency installed before Ollama
         # ----------------------------------------------------------
         print()
+        has_zstd = "zstd" in all_source and "apt-get" in all_source
+        self.record_result(
+            "zstd dependency installed before Ollama",
+            has_zstd,
+            "apt-get install zstd found" if has_zstd else "Missing zstd install"
+        )
+
+        # ----------------------------------------------------------
+        # TEST: Ollama install URL uses ollama.com (not ollama.ai)
+        # ----------------------------------------------------------
         has_correct_url = "ollama.com/install.sh" in all_source
         has_old_url = "ollama.ai/install.sh" in all_source
         self.record_result(
