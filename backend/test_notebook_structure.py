@@ -150,13 +150,13 @@ class NotebookValidator:
         # ----------------------------------------------------------
         # TEST: Backend URL output cell exists
         # ----------------------------------------------------------
-        has_proxy_port = "proxyPort(5000)" in all_source or "proxyPort(5000)" in all_source
+        has_ngrok = "ngrok" in all_source and "connect" in all_source
         has_connect_instructions = "REACT_APP_BACKEND_URL" in all_source or "frontend/.env" in all_source
 
         self.record_result(
-            "Backend URL output cell exists",
-            has_proxy_port,
-            "Uses google.colab.kernel.proxyPort(5000)" if has_proxy_port else "Missing"
+            "Backend exposed via ngrok tunnel",
+            has_ngrok,
+            "Uses pyngrok to create public URL" if has_ngrok else "Missing ngrok setup"
         )
         self.record_result(
             "Local frontend connection instructions present",
