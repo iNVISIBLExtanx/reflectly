@@ -124,11 +124,17 @@ class NotebookValidator:
         # TEST: No frontend cells (Node.js/React)
         # ----------------------------------------------------------
         has_nodejs = "nodesource" in all_source or "apt-get install -y nodejs" in all_source
-        # Check for actual npm start execution (subprocess/Popen), not print instructions
-        has_npm_exec = any(
-            "npm" in c["source"] and ("Popen" in c["source"] or "!npm" in c["source"])
-            for c in code_cells
-        )
+        # Check for React frontend execution (Popen with npm start, or shell !npm start)
+        # Exclude: print statements with instructions, npm install for tools
+        def has_react_execution(source):
+            for line in source.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("print(") or stripped.startswith("#"):
+                    continue
+                if "!npm start" in stripped or ("Popen" in stripped and "npm" in stripped):
+                    return True
+            return False
+        has_npm_exec = any(has_react_execution(c["source"]) for c in code_cells)
         has_frontend_log = "frontend.log" in all_source
 
         self.record_result(
@@ -150,13 +156,13 @@ class NotebookValidator:
         # ----------------------------------------------------------
         # TEST: Backend URL output cell exists
         # ----------------------------------------------------------
-        has_ngrok = "ngrok" in all_source and "connect" in all_source
+        has_ngrok = ("ngrok" in all_source or "localtunnel" in all_source or "lt --port" in all_source)
         has_connect_instructions = "REACT_APP_BACKEND_URL" in all_source or "frontend/.env" in all_source
 
         self.record_result(
-            "Backend exposed via ngrok tunnel",
+            "Backend exposed via public tunnel",
             has_ngrok,
-            "Uses pyngrok to create public URL" if has_ngrok else "Missing ngrok setup"
+            "Uses tunnel for public URL" if has_ngrok else "Missing tunnel setup"
         )
         self.record_result(
             "Local frontend connection instructions present",

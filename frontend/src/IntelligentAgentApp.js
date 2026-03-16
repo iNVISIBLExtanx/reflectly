@@ -35,6 +35,7 @@ const IntelligentAgentApp = () => {
     neutral: '#9E9E9E'
   };
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     checkBackendStatus();
   }, []);
@@ -48,6 +49,7 @@ const IntelligentAgentApp = () => {
         method: 'GET',
         headers: {
           'Accept': 'application/json',
+          'Bypass-Tunnel-Reminder': 'true',
         },
       });
 
@@ -89,6 +91,7 @@ const IntelligentAgentApp = () => {
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
+          'Bypass-Tunnel-Reminder': 'true',
           ...options.headers
         },
       });
