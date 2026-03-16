@@ -49,7 +49,6 @@ const IntelligentAgentApp = () => {
         method: 'GET',
         headers: {
           'Accept': 'application/json',
-          'Bypass-Tunnel-Reminder': 'true',
         },
       });
 
@@ -91,7 +90,6 @@ const IntelligentAgentApp = () => {
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
-          'Bypass-Tunnel-Reminder': 'true',
           ...options.headers
         },
       });

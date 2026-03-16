@@ -156,7 +156,7 @@ class NotebookValidator:
         # ----------------------------------------------------------
         # TEST: Backend URL output cell exists
         # ----------------------------------------------------------
-        has_ngrok = ("ngrok" in all_source or "localtunnel" in all_source or "lt --port" in all_source)
+        has_ngrok = ("ngrok" in all_source or "localtunnel" in all_source or "lt --port" in all_source or "cloudflared" in all_source)
         has_connect_instructions = "REACT_APP_BACKEND_URL" in all_source or "frontend/.env" in all_source
 
         self.record_result(
