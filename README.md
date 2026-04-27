@@ -125,4 +125,4 @@ M.Sc. Data Science (Trent University, Canada) · IEEE Published · Patent Pendin
 
 ---
 
-**Interested in this research or its commercial applications?** Contact: manodhya@clazy.online
+**Interested in this research or its commercial applications?** Contact: mopallage@gmail.com
