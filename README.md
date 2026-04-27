@@ -1,25 +1,26 @@
 # Reflectly
 ### AI-Powered Emotional Journaling & Mental Wellness Platform
 
-[![Live Demo](https://img.shields.io/badge/Live%20Demo-reflectly--eta.vercel.app-brightgreen?style=for-the-badge)](https://reflectly-eta.vercel.app)
-[![Status](https://img.shields.io/badge/Status-Research%20Prototype-blue?style=for-the-badge)]()
+[![Status](https://img.shields.io/badge/Status-Research%20Prototype%20(Not%20Hosted)-orange?style=for-the-badge)]()
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)]()
 [![Python](https://img.shields.io/badge/Python-3.11-blue?style=for-the-badge&logo=python&logoColor=white)]()
 [![React](https://img.shields.io/badge/React-18.2-61DAFB?style=for-the-badge&logo=react&logoColor=black)]()
+
+> **Note:** This is a research prototype. The system is not currently hosted publicly. The code, architecture, and research documentation are available in this repository.
 
 ---
 
 ## The Problem
 
-Mental wellness apps generate journal entries but don't learn from them. Most platforms offer generic recommendations that ignore the fact that emotional patterns are personal, non-linear, and context-dependent.
+Mental wellness apps generate journal entries but don’t learn from them. Most platforms offer generic recommendations that ignore the fact that emotional patterns are personal, non-linear, and context-dependent.
 
-A user who journaled about anxiety 6 months ago is not the same person today. Standard CBT-based apps treat every entry in isolation. The result: recommendations that don't fit, low engagement, and users who abandon the app after a few weeks.
+A user who journaled about anxiety 6 months ago is not the same person today. Standard CBT-based apps treat every entry in isolation. The result: recommendations that don’t fit, low engagement, and users who abandon the app after a few weeks.
 
 ---
 
 ## What Reflectly Does
 
-Reflectly is an AI-powered journaling system that learns each user's emotional patterns over time and delivers personalised wellness recommendations that get more accurate the longer you use it.
+Reflectly is an AI-powered journaling system that learns each user’s emotional patterns over time and delivers personalised wellness recommendations that get more accurate the longer you use it.
 
 Three systems work together:
 
@@ -27,7 +28,7 @@ Three systems work together:
 2. **Graph Neural Network (GraphSAGE)** — Maps the relationship between emotional states and coping strategies over time, personalised per user
 3. **A* Pathfinding Algorithm** — Finds the most effective emotional transition path based on your personal history
 
-**The result:** Recommendations that improve with every journal entry, not recommendations pulled from a generic wellness library.
+**The result:** Recommendations that improve with every journal entry — not pulled from a generic wellness library.
 
 ---
 
@@ -85,12 +86,23 @@ User Journal Entry (React Frontend)
 
 ---
 
+## Repository Structure
+
+```
+reflectly/
+├── backend/          # Python FastAPI + GNN + LLM pipeline
+├── frontend/         # React 18 journaling interface
+├── docs/             # Architecture and research documentation
+└── Reflectly_Colab.ipynb  # GPU-backed GNN training notebook
+```
+
+---
+
 ## Live Metrics
 
-- **Status:** Research prototype — 3/7 functions tested
-- **Deployments:** 16 (Preview + Production)
+- **Status:** Research prototype — 3/7 functions tested, not publicly hosted
 - **Commits:** 100 across development history
-- **Live at:** [reflectly-eta.vercel.app](https://reflectly-eta.vercel.app)
+- **Architecture:** Documented in `/docs`
 
 ---
 
